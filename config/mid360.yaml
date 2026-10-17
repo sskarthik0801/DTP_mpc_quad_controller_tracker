@@ -1,0 +1,65 @@
+/**:
+    ros__parameters:
+        feature_extract_enable: false
+        point_filter_num: 3               # was 1 (every point). MID360 pushes ~200k pts/s; at N=1 FAST-LIO
+                                   # saturates a core on the Orin Nano (100% CPU) and the ikd-Tree map
+                                   # grows ~1.7 MB/s. N=3 is the upstream MID360 default.
+        max_iteration: 3
+        filter_size_surf: 0.2
+        filter_size_map: 0.5
+        cube_side_length: 200.0            # was 1000.0 -- ikd-Tree local map extent. At 1 km nothing is ever
+                                   # trimmed indoors, so the map grew to ~3 GB in 18 min and the
+                                   # Jetson swap-thrashed until odom fell from 10 Hz to 0.5 Hz.
+        runtime_pos_log_enable: false
+        map_file_path: "./test.pcd"
+
+        common:
+            lid_topic:  "/livox/lidar"
+            imu_topic:  "/livox/imu"
+            time_sync_en: false         # ONLY turn on when external time synchronization is really not possible
+            time_offset_lidar_to_imu: 0.0 # Time offset between lidar and IMU calibrated by other algorithms, e.g. LI-Init (can be found in README).
+                                        # This param will take effect no matter what time_sync_en is. So if the time offset is not known exactly, please set as 0.0
+
+        preprocess:
+            lidar_type: 1                # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR, 4 for any other pointcloud input
+            scan_line:  4
+            blind: 0.5
+            timestamp_unit: 3
+            scan_rate: 10
+
+        mapping:
+            acc_cov: 0.1
+            gyr_cov: 0.1
+            b_acc_cov: 0.0001
+            b_gyr_cov: 0.0001
+            fov_degree:    360.0
+            det_range:      70.0
+            extrinsic_est_en:  true      # true: enable the online estimation of IMU-LiDAR extrinsic
+            extrinsic_T: [ -0.011, -0.02329, 0.04412 ]
+            extrinsic_R: [ 1., 0., 0.,
+                            0., 1., 0.,
+                            0., 0., 1.]
+
+        publish:
+            path_en: true                # true: publish Path
+            effect_map_en: false         # true: publish Effects
+            map_en: false                # was true: publishes /Laser_map, a topic with ZERO
+                                   # subscribers in this pipeline (SUPER ingests /cloud_registered
+                                   # + /lidar_slam/odom, not /Laser_map). Its backing buffer
+                                   # (pcl_wait_pub in laserMapping.cpp) is appended to every 1s by
+                                   # map_publish_callback() and NEVER CLEARED -- this is the actual
+                                   # source of the "still ~0.55 MB/s, not solved" residual RAM leak
+                                   # after the point_filter_num/cube_side_length mitigation below.
+                                   # Confirmed live 2026-08-26: +37 MB/60s with this true, matching
+                                   # the leak rate exactly; disabling it is expected to plateau RSS.
+            scan_publish_en:  true       # false: close all the point cloud output
+            dense_publish_en: true       # false: low down the points number in a global-frame point clouds scan.
+            scan_bodyframe_pub_en: true  # true: output the point cloud scans in IMU-body-frame
+
+        pcd_save:
+            pcd_save_en: false            # was true: FAST-LIO accumulates EVERY registered scan in
+                                   # pcl_wait_save to dump one PCD at exit (interval -1 = never
+                                   # split). That is unbounded RAM growth -- the real cause of the
+                                   # 2.97 GB / swap-thrash / 10 Hz -> 0.5 Hz collapse. Not needed live.
+            interval: -1                 # how many LiDAR frames saved in each pcd file; 
+                                        # -1 : all frames will be saved in ONE pcd file, may lead to memory crash when having too much frames.
