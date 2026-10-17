@@ -1,0 +1,17 @@
+# ROS2 / colcon build artifacts
+build/
+install/
+log/
+
+# Point-cloud dumps (FAST-LIO pcd_save)
+*.pcd
+
+# Python / editor
+__pycache__/
+*.pyc
+.vscode/
+.idea/
+
+# ROS bag recordings (scripts/gcs -> Recording panel, or `ros2 bag record`).
+# Hundreds of MB a minute on this aircraft -- never in git.
+bags/

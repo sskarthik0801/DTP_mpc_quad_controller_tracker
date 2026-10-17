@@ -1,0 +1,296 @@
+Panels:
+- Class: rviz_common/Displays
+  Name: Displays
+  Property Tree Widget:
+    Splitter Ratio: 0.5
+  Tree Height: 600
+- Class: rviz_common/Views
+  Name: Views
+Visualization Manager:
+  Class: ''
+  Name: root
+  Displays:
+  - Class: rviz_default_plugins/Grid
+    Name: Grid
+    Enabled: true
+    Cell Size: 1
+    Plane Cell Count: 40
+    Color: 160; 160; 164
+    Reference Frame: <Fixed Frame>
+    Value: true
+  - Class: rviz_default_plugins/TF
+    Name: TF
+    Enabled: true
+    Marker Scale: 1
+    Show Names: true
+    Show Axes: true
+    Show Arrows: false
+    Value: true
+  - Class: rviz_default_plugins/PointCloud2
+    Name: cloud_registered
+    Enabled: true
+    Topic:
+      Value: /cloud_registered
+      Depth: 5
+      History Policy: Keep Last
+      Reliability Policy: Best Effort
+      Durability Policy: Volatile
+    Style: Points
+    Size (Pixels): 2
+    Color Transformer: AxisColor
+    Axis: Z
+    Decay Time: 0
+    Value: true
+  - Class: rviz_default_plugins/PointCloud2
+    Name: rog_map_inf_occ
+    Enabled: true
+    Topic:
+      Value: /rog_map/inf_occ
+      Depth: 5
+      History Policy: Keep Last
+      Reliability Policy: Best Effort
+      Durability Policy: Volatile
+    Style: Boxes
+    Size (m): 0.2
+    Color Transformer: FlatColor
+    Color: 255; 120; 0
+    Decay Time: 0
+    Value: true
+  - Class: rviz_default_plugins/PointCloud2
+    Name: rog_map_occ
+    Enabled: false
+    Topic:
+      Value: /rog_map/occ
+      Depth: 5
+      History Policy: Keep Last
+      Reliability Policy: Best Effort
+      Durability Policy: Volatile
+    Style: Boxes
+    Size (m): 0.1
+    Color Transformer: FlatColor
+    Color: 255; 255; 255
+    Decay Time: 0
+    Value: false
+  - Class: rviz_default_plugins/Odometry
+    Name: Odometry
+    Enabled: true
+    Topic:
+      Value: /lidar_slam/odom
+      Depth: 5
+      History Policy: Keep Last
+      Reliability Policy: Best Effort
+      Durability Policy: Volatile
+    Keep: 1
+    Shape: Axes
+    Axes Length: 0.6
+    Axes Radius: 0.06
+    Value: true
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: Offboard hold (P5)
+    Namespaces: {}
+    Topic:
+      Depth: 1
+      Durability Policy: Transient Local
+      Filter size: 10
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /viz/offboard
+    Value: true
+  - Class: rviz_default_plugins/Marker
+    Enabled: true
+    Name: Drone radius
+    Namespaces: {}
+    Topic:
+      Depth: 1
+      Durability Policy: Transient Local
+      Filter size: 10
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /viz/drone_radius
+    Value: true
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: SUPER plan (exp_traj)
+    Namespaces: {}
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      Filter size: 10
+      History Policy: Keep Last
+      Reliability Policy: Best Effort
+      Value: /visualization/exp_traj
+    Value: true
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: SUPER committed traj
+    Namespaces: {}
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      Filter size: 10
+      History Policy: Keep Last
+      Reliability Policy: Best Effort
+      Value: /visualization/committed_traj
+    Value: true
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: SUPER goal
+    Namespaces: {}
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      Filter size: 10
+      History Policy: Keep Last
+      Reliability Policy: Best Effort
+      Value: /visualization/goal
+    Value: true
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: SUPER frontend path (A*)
+    Namespaces: {}
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      Filter size: 10
+      History Policy: Keep Last
+      Reliability Policy: Best Effort
+      Value: /visualization/frontend_path
+    Value: true
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: SUPER backup traj (emergency)
+    Namespaces: {}
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      Filter size: 10
+      History Policy: Keep Last
+      Reliability Policy: Best Effort
+      Value: /visualization/backup_traj
+    Value: true
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: false
+    Name: SUPER corridor (exp_sfc)
+    Namespaces: {}
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      Filter size: 10
+      History Policy: Keep Last
+      Reliability Policy: Best Effort
+      Value: /visualization/exp_sfc
+    Value: false
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: false
+    Name: SUPER corridor (backup_sfc)
+    Namespaces: {}
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      Filter size: 10
+      History Policy: Keep Last
+      Reliability Policy: Best Effort
+      Value: /visualization/backup_sfc
+    Value: false
+  - Class: rviz_default_plugins/Path
+    Enabled: false
+    Name: Traveled path (NOT the plan)
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      Filter size: 10
+      History Policy: Keep Last
+      Reliability Policy: Best Effort
+      Value: /fsm/path
+    Alpha: 1
+    Buffer Length: 1
+    Color: 0; 255; 255
+    Line Style: Lines
+    Pose Style: None
+    Value: false
+  - Class: rviz_default_plugins/Image
+    Name: Person boxes (camera)
+    Enabled: true
+    Topic:
+      Value: /dtp/image_annotated/laptop
+      Depth: 1
+      History Policy: Keep Last
+      Reliability Policy: Best Effort
+      Durability Policy: Volatile
+    Max Value: 1
+    Min Value: 0
+    Median window: 5
+    Normalize Range: false
+    Value: true
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: DTP people / lock / forecast
+    Namespaces: {}
+    Topic:
+      Depth: 1
+      Durability Policy: Volatile
+      Filter size: 10
+      History Policy: Keep Last
+      Reliability Policy: Best Effort
+      Value: /dtp/viz
+    Value: true
+  - Class: rviz_default_plugins/Pose
+    Enabled: true
+    Name: Follow goal into SUPER
+    Topic:
+      Depth: 1
+      Durability Policy: Volatile
+      Filter size: 10
+      History Policy: Keep Last
+      Reliability Policy: Best Effort
+      Value: /planning/follow_goal
+    Shape: Arrow
+    Color: 185; 156; 255
+    Alpha: 1
+    Shaft Length: 0.5
+    Shaft Radius: 0.05
+    Head Length: 0.2
+    Head Radius: 0.12
+    Value: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: world
+    Frame Rate: 30
+  Tools:
+  - Class: rviz_default_plugins/MoveCamera
+  - Class: rviz_default_plugins/FocusCamera
+  - Class: rviz_default_plugins/Measure
+  - Class: rviz_default_plugins/SetGoal
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /goal_pose
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Name: Current View
+      Distance: 25
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Pitch: 0.6
+      Yaw: 0.785
+      Target Frame: <Fixed Frame>
+    Saved: null
+Window Geometry:
+  Height: 1000
+  Width: 1700
+  Displays:
+    collapsed: false
+  Views:
+    collapsed: false
+  Person boxes (camera):
+    collapsed: false

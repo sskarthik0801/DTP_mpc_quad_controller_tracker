@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>command_mux</name>
+  <version>0.0.1</version>
+  <description>
+    Goal-source arbitration (SAFETY&gt;RC&gt;FOLLOW&gt;NAV) and the independent human-proximity
+    veto, sourced from /dtp/targets directly so a follow_planner bug cannot defeat it. See
+    plan/dtp-imp/02 SS4 and plan/dtp-imp/04 SS4.
+  </description>
+  <maintainer email="srajule@purdue.edu">krishna</maintainer>
+  <license>Proprietary</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <!-- /lidar_slam/odom. The proximity veto checks the PATH from the drone to the goal rather
+       than the goal alone (plan/dtp-imp/04 SS4, "predicted closest approach"), and the HOLD goal
+       is anchored on the drone's own position - neither is computable without odom. -->
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>dtp_msgs</exec_depend>
+  <!-- terrain_estimator: FAST-LIO's /cloud_registered_body (terrain_map.py). -->
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>sensor_msgs_py</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <!-- ABORT -> PX4 NAV_LAND. Lives in Kevin's workspace; optional at import, required when abort_enable is true. -->
+  <exec_depend>px4_msgs</exec_depend>
+
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

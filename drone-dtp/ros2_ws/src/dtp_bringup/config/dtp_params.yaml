@@ -1,0 +1,461 @@
+# DTP follow-stack parameters, one file for the whole stack.
+#
+# TWO THINGS ABOUT ROS 2 PARAMETER YAML THAT MAKE THIS FILE FAIL SILENTLY, BOTH SEEN IN THE WILD:
+#
+#   1. The top-level key must equal the RUNNING NODE'S NAME. A mismatch is not an error -- the
+#      whole section is ignored and every value silently reverts to the node's own default. That
+#      is why the launch files pin `name=` on each Node action to the name the node gives itself
+#      in code; the coupling is then stated in one place instead of two files agreeing by luck.
+#   2. An override for a parameter the node never DECLARES is also ignored silently. So a value
+#      written here before the node declares it does nothing at all, and tuning it looks like
+#      the tuning had no effect rather than like a missing parameter.
+#
+# WHAT IS DELIBERATELY NOT IN THIS FILE
+# --------------------------------------
+# follow_planner_node and command_mux each declare a large parameter set with reasoned defaults
+# in their own source (module-top named constants, per house style). Restating those here would
+# create a second source of truth that drifts silently the moment either side is retuned -- and
+# per note 1 above, drift in a parameter file is invisible. So this file carries only the knobs
+# a mission or a bench session actually retunes; everything else stays on the node's default,
+# where the reasoning lives next to the code that uses it. Add an entry here only when you are
+# overriding a default on purpose.
+#
+# YAML does not expand `~`. Any path here must be absolute.
+
+fusion_node:
+  ros__parameters:
+    # LiDAR is reliable to ~15 m on a person, not to the sensor's 40 m spec (risk A9). Returns
+    # beyond this are rejected rather than fused into a range the standoff math would trust.
+    max_depth: 15.0
+    # MJPEG, not raw. rclpy drops ~8% of raw 2.76 MB frames at 30 Hz under BEST_EFFORT because
+    # it cannot deserialise fast enough; the JPEG is 0.17 MB and keeps up (measured 2026-09-07).
+    # This must match perception_node's setting below AND the transport the driver is actually
+    # producing -- sensors.launch.py pins color_mjpeg_quality, so compressed is present.
+    use_compressed: true
+    # calib_file is deliberately absent. calib_io's default is a BARE FILENAME resolved against
+    # the package share directory; a relative path resolves against the process working
+    # directory and so never resolves from the install space on the aircraft. Override with the
+    # launch's calib_file:= argument (absolute path) if you need a different body's calibration.
+
+perception_node:
+  ros__parameters:
+    # MEASURED on the aircraft 2026-09-08, first end-to-end run: the live colour<->depth DELIVERY
+    # skew is ~0.067 s, well over the 0.025 s the code defaults to, so EVERY frame was rejected
+    # and perception published an empty TargetArray at a healthy 14 Hz -- blind, not quiet.
+    # This is delivery skew (colour stamp vs newest DELIVERED depth message), so it carries
+    # transport and scheduling delay on top of sensor phase; 0.025 s was only ever plausible for
+    # sensor phase alone. 0.12 s accepts ~2 depth frames of lag at 30 Hz.
+    # THE TRADE IS REAL: a wider window admits more box/cloud misregistration during fast ego
+    # yaw. Narrow it once the true phase is characterised rather than leaving it wide by default.
+    max_depth_colour_skew_s: 0.20
+    # MEASURED 2026-09-08, first end-to-end run: frames were ageing out at 0.307 s waiting for a
+    # TF that covers their stamp, against the 0.25 s default -- so every frame published blind on
+    # "extrapolation into the future". FAST-LIO's /tf lags its own /lidar_slam/odom topic; the
+    # colour stamp is typically ~23 ms ahead of the newest transform.
+    # 0.45 s CLOSES THE CHAIN BUT IS NOT THE RIGHT ANSWER: it buys availability with staleness,
+    # and 0.3 s of perception latency is large for a follower at 1.4 m/s (~0.4 m of target
+    # travel). The correct fix is the contract's option B -- buffer /lidar_slam/odom and
+    # interpolate to the frame stamp instead of depending on TF publication cadence.
+    max_pair_age_s: 0.45
+    # FLIGHT-LEGAL SETTING. Was `true` (bench only) from 2026-09-08 to 2026-09-10 because the
+    # camera stamped from its own clock (Orbbec time_domain=global): 53 ms off ROS time on
+    # 2026-09-08, 30.5 ms on 2026-09-09, and a stamp-exact TF lookup never succeeded. The fix
+    # is at the source, not here: sensors.launch.py now passes time_domain:=system, which
+    # stamps from the host clock (+5.6 ms residual, and that is latency, not skew).
+    # VERIFIED 2026-09-10 with SLAM up: tf_at_latest false, perception_ok true on every frame,
+    # /dtp/targets 13.3 Hz, stamp age at publish ~0.21 s (bounded by the 10 Hz odom cadence
+    # tf2 will not extrapolate past). Leave this false. Setting it true again is only ever a
+    # diagnosis of a clock problem, never a fix for one -- in flight it is yaw-rate x range
+    # of position error with nothing on any topic to say so.
+    tf_at_latest: false
+    # *** 8.0 SINCE 2026-09-12. WAS 10.0 FOR ONE DAY. BOTH ARE MEASURED -- see both tables. ***
+    #
+    # MEASURED 2026-09-11 against KEVIN'S FULL NAVIGATION STACK (his FAST-LIO + fsm_node +
+    # both PX4 bridges + the web GCS, all co-resident), which is the first time this node has
+    # run alongside the real flight stack rather than a bare FAST-LIO:
+    #
+    #   detect_rate_hz   published   blind    USEFUL lifts   FAST-LIO CPU
+    #        15.0          12.6 Hz   37.4 %      7.9 Hz          44 %
+    #        10.0           9.9 Hz    2.2 %      9.7 Hz          31 %
+    #         8.0           8.0 Hz    0.0 %      8.0 Hz          29 %
+    #
+    # 15 Hz is WORSE THAN 10 Hz ON EVERY AXIS: fewer usable world positions per second, a
+    # 17x higher blind rate, and more CPU stolen from the SLAM the autopilot's position
+    # estimate depends on. It was never a 15 Hz pipeline; it was a 12.6 Hz pipeline throwing
+    # away a third of its own output.
+    #
+    # THE MECHANISM, because the symptom pointed somewhere else entirely. At 15 Hz this node
+    # saturates its SINGLE-THREADED executor: ~45-79 ms of decode + organized-cloud build +
+    # inference per frame against a 67 ms budget, at 250 % CPU. A saturated executor does not
+    # only drop throughput -- it starves THIS NODE'S OWN tf2 listener callbacks, so the
+    # transform buffer goes stale while /tf is perfectly healthy on the wire. Frames then age
+    # out of the pending queue and publish blind, reporting
+    #   'extrapolation into the future ... latest data is at <476 ms ago>'
+    # which reads exactly like a clock-offset or TF-cadence fault and is neither. MEASURED on
+    # the wire at the same moment: odom inter-arrival mean 100 ms, p99 117 ms, max 311 ms, and
+    # ZERO gaps over 450 ms; /tf arrives within 1-2 ms of the odom topic carrying the same
+    # pose. Nothing outside this node was late. Lowering the duty cycle fixed it completely.
+    #
+    # WHY 10 IS ALSO THE PRINCIPLED VALUE, not just the fastest one that fits: the world
+    # transform a detection is lifted through only updates at /lidar_slam/odom's 10 Hz. Two
+    # detections inside one odom period are lifted through (nearly) the same pose, so rates
+    # above 10 Hz buy no new WORLD-frame information -- they buy queue depth and contention.
+    #
+    # The residual 2.2 % is the same starvation in its tail. The architectural fix that would
+    # reclaim it is a MultiThreadedExecutor with the tf2 listener and odom on their own
+    # callback group, so transform ingestion can never be blocked by inference. That is a
+    # threading change to the node that owns every world position in the stack, it needs its
+    # own tests, and it is NOT a thing to land the day before a first flight. Recorded in
+    # plan/dtp-imp/21 as the follow-up.
+    #
+    # RE-MEASURED 2026-09-12, RIDING ON KEVIN'S DASHBOARD-LAUNCHED STACK -- which is the
+    # field configuration, and a heavier one than the 09-11 table was taken under: his
+    # m1_super_lidar runs FAST-LIO with extrinsic_est_en true at **74 % CPU** (ours: 31 %),
+    # this node at 137 %, load 6.0 on 8 cores, jetson_clocks set. The 09-11 residual 2.2 %
+    # became 8 %, and the tail is what a lock lives or dies on:
+    #
+    #   detect_rate_hz   TF wait p50 / p90 / p99 / MAX     frames > 0.45 s   empty frames
+    #        10.0          104 / 145 / 1393 / 1527 ms         8.0 %          ~2 per second
+    #         8.0           89 / 127 /  136 /  141 ms         0.0 %          3 in 90 s
+    #
+    # What that meant for the follower, same subject, same room, same hour: at 10 Hz the lock
+    # cycled LOCKED -> COASTING -> re-acquired four times in 30 s and was LOST twice, every
+    # COASTING an empty frame and every LOST a coast outrunning the 0.20 s forecast horizon.
+    # At 8 Hz: ONE acquisition, held for the whole 90 s window, forecast drawn in 341 of 341
+    # messages, no coast, no loss. 8 is the rate that fits under the stack we actually fly.
+    #
+    # One more thing 10 Hz did: its jittering lifts moved a SEATED person's position enough
+    # to pass the 0.4 m acquisition motion gate. At 8 Hz the same seated person was honestly
+    # static and the gate correctly refused. The motion gate is only as good as the lift.
+    detect_rate_hz: 8.0
+    conf: 0.25
+    # *** 2.0 SINCE 2026-10-02 (user's decision). The node's own default is the library's 0.35. ***
+    # The predictor clamps a confirmed track's world position to max_step_m per processed frame
+    # and then EMA-smooths it (alpha 0.25), so the PUBLISHED position can move at most
+    # 0.25 * max_step_m per frame. 0.35 is 0.0875 m/frame: 0.9 m/s at the ~10.5 Hz flown, 0.7 m/s
+    # at the configured 8 Hz -- slower than a brisk walk (1.4 m/s). Flight 2026-10-02 20:03 showed
+    # the consequence: the walker jogged at ~2 m/s, the detector boxed them and the depth read
+    # 4 -> 9.3 m, but the published position advanced at 0.87 m/s -- the aircraft's own speed --
+    # so the range read a constant 3.7 m for 3 s until the track was dropped and rebuilt at 9.4 m
+    # (flight-log.md).
+    # Why 2.0 and not the 1.2 a steady 3 m/s would need: at dusk the detector boxes a far
+    # walker only every second or third frame, and across a 0.2-0.3 s gap the raw step is up to
+    # 1.5 m. On the 2026-10-02 fixture 1.2 still clipped those steps (0.64 m off the clamp-free
+    # path); 2.0 clips nothing, and bounds a one-frame outlier to 0.25 * 2.0 = 0.50 m. The
+    # clamp's outlier job (a wall behind an edge-straddling box) is also covered by
+    # perception_node's velocity-aware range-jump gate (accept_range), which holds what is
+    # published for up to 3 frames. What remains is the EMA itself: alpha 0.25 (~3 frames) trails
+    # a 2.5-3 m/s walker by ~0.7 m median, 1.5 m peak -- see smooth_alpha just below. Replay
+    # gate: scripts/max_step_replay_check.py (the 2026-10-02 frames through the real filter
+    # methods). Relaunch the follower to pick it up; no rebuild of detection_pipeline/.
+    max_step_m: 2.0
+    # *** 0.5 SINCE 2026-10-02 (user's decision). The node's own default is the library's 0.25. ***
+    # The EMA weight behind the clamp: new = alpha * measurement + (1 - alpha) * old. Its lag
+    # behind a steadily moving person is ~(1 - alpha) / alpha frames of their motion: 3 frames at
+    # 0.25, 1 frame at 0.5. On the 2026-10-02 frames (a 2.5 m/s walker at 10.5 Hz) the published
+    # position trailed the raw by 0.71 m median / 1.46 m peak at 0.25 and 0.24 / 0.77 m at 0.5,
+    # and the final range was 8.98 vs 9.40 m at 0.25, 9.40 at 0.5. The price is noise: a standing
+    # person's frame-to-frame jitter passes at 0.58x of the raw instead of 0.38x, and a one-frame
+    # outlier moves the output 0.5 * max_step_m = 1.0 m instead of 0.5 m (accept_range still
+    # holds outliers for up to 3 frames before they reach the wire). The height EMA in
+    # _build_target reads the same alpha, so z follows at the same weight. The CTRV forecast and
+    # Target.velocity are built on this smoothed history, so a running person also gets a
+    # fresher speed and lead. Same gate as max_step_m. Relaunch the follower; no rebuild.
+    smooth_alpha: 0.5
+    use_compressed: true
+    # *** cuda SINCE 2026-09-13 (user's instruction). The node's own default is numpy. ***
+    # The organized cloud (depth -> colour registration, z-buffer, 1280x720x3 build) was the
+    # single largest CPU cost in this node, NOT JPEG decode as earlier notes said. MEASURED on
+    # this NX over 200 real frames of 20260910_flightlegal_bench (scripts/bench_cloud_backend.py):
+    #
+    #   cloud_backend   wall per frame      CPU per frame    % of a core @ 8 Hz   vs numpy
+    #   numpy           38 ms (p95 45)      112 ms           90 %
+    #   cuda            16-31 ms            10-14 ms          8-11 %              200/200 frames
+    #                                                                             bit-identical
+    #
+    # In the REAL node, replaying that bag twice per backend (59 s each): numpy 110 / 114
+    # CPU-seconds, cuda 41 / 41 -- 1.9 cores down to 0.7. Target positions agreed within the
+    # replay's own run-to-run noise (two cuda runs differ from each other as much as from numpy).
+    # Per-frame WALL time did NOT improve (the GPU is shared with YOLO): this is CPU headroom
+    # for FAST-LIO and the rest of the stack, not lower latency, so it does not by itself make
+    # detect_rate_hz 10 safe again -- re-measure that on the aircraft before raising it.
+    # The wall range is the GPU devfreq governor (nvhost_podgov) clocking down between frames;
+    # with YOLO keeping the GPU busy, or jetson_clocks set, it sits at the low end. The node
+    # builds its first 5 frames BOTH ways, flies the numpy cloud while comparing, and turns the
+    # GPU path off at ERROR on any disagreement, 3 consecutive CUDA errors, or no CUDA at start
+    # (e.g. libcudss missing from LD_LIBRARY_PATH -- dtp_env_jetson.sh sets it). The frame log
+    # line prints the backend actually in use: "cloud 14.2 ms [cuda]".
+    # To revert: numpy. Nothing else changes -- same cloud, same contract, more CPU.
+    cloud_backend: "cuda"
+    # FAST-LIO stamps its odometry in `camera_init`, not `odom` -- `odom` is the plan's informal
+    # name for the world frame and is not a frame_id anything publishes (m1_super_lidar.launch.py
+    # publishes a static identity world -> camera_init purely so RViz can use Fixed Frame world).
+    # perception_node's own default of 'odom' therefore cannot resolve.
+    # MEASURED ON THE AIRCRAFT 2026-09-08 from a live /lidar_slam/odom:
+    #   header.frame_id  = lidar_init   (world)
+    #   child_frame_id   = lidar_imu    (body)
+    # NOT camera_init. That name was inferred from this file and recorded as "verified";
+    # it was never read off the topic. Verify with:
+    #   ros2 topic echo --field header.frame_id /lidar_slam/odom
+    odom_frame: "lidar_init"
+    # The body frame FAST-LIO stamps as child_frame_id. static_calib_tf refuses to start
+    # without it, deliberately -- a wrong-but-plausible frame id fails exactly like a
+    # missing one while looking checked.
+    body_frame: "lidar_imu"
+    #
+    # camera_frame IS NOT SET HERE ON PURPOSE. perception_node defaults it to 'camera', which
+    # nothing publishes either, but the fix is not to guess the Orbbec's optical frame name: a
+    # wrong-but-plausible frame id fails the TF lookup in exactly the same way as the current
+    # default while looking like it was checked. Worse, nothing in this repo publishes a
+    # base_link -> camera transform at all -- the calibration we hold is T_camera_lidar (Livox
+    # frame -> camera optical frame), not a body-frame mount -- so the chain is missing, not
+    # merely misnamed. Read the real names off the aircraft before setting this:
+    #     ros2 topic echo --field header.frame_id /lidar_slam/odom
+    #     ros2 run tf2_tools view_frames
+    # camera_frame: "camera_color_optical_frame"
+    #
+    # model is not set here either: perception_node defaults it to ~/models/yolo11s.engine,
+    # expanded at runtime. A TensorRT engine is specific to the GPU, driver and TensorRT version
+    # it was BUILT on, so the path is per-machine and belongs in an override, not in a file that
+    # ships. If you do set it, write it absolute -- see the header.
+
+# The node that bridges the ONE missing link in the TF chain. Without these it refuses to
+# start (by design) and every world lift in the follow stack fails.
+static_calib_tf:
+  ros__parameters:
+    # Both MEASURED off a live /lidar_slam/odom on 2026-09-08, not inferred:
+    #   header.frame_id = lidar_init (world), child_frame_id = lidar_imu (body)
+    world_frame: "lidar_init"
+    body_frame: "lidar_imu"
+    # LiDAR -> body (IMU) extrinsic, COPIED VERBATIM from the mid360.yaml FAST-LIO actually runs
+    # from on the aircraft (~/super_ws/install/fast_lio/share/fast_lio/config/mid360.yaml:38-41,
+    # the Mid-360 datasheet IMU offset). NOT from this repo's config/mid360.yaml, which says
+    # identity and is not the deployed file -- that mismatch is why static_calib_tf reported
+    # "WRONG BY 0.051 m" on every launch from 2026-09-08 to 2026-09-11.
+    # Same layout and convention as FAST-LIO's mapping.extrinsic_T / extrinsic_R (p_body =
+    # R p_lidar + T, R row-major). static_calib_tf composes these into the published body ->
+    # camera transform and then reads FAST-LIO's live parameters back and logs at ERROR if they
+    # differ, so a stale copy here is loud, not silent. If Kevin re-tunes the extrinsic, change
+    # BOTH or the node will tell you.
+    lidar_to_body_t: [-0.011, -0.02329, 0.04412]
+    lidar_to_body_r: [1.0, 0.0, 0.0,
+                      0.0, 1.0, 0.0,
+                      0.0, 0.0, 1.0]
+
+target_manager:
+  ros__parameters:
+    # The frame perception_node stamps /dtp/targets in (its odom_frame above). The node's own
+    # default is the pre-2026-09-08 guess 'camera_init'; left unset it warned every 5 s for
+    # 37 hours that the frame did not match, and that warning would be noise in a flight log
+    # exactly when a real mismatch needed to be seen.
+    world_frame: "lidar_init"
+    # *** BENCH ONLY. MUST BE false BEFORE ANY FLIGHT WITH A PERSON IN THE VOLUME. ***
+    # Not a default change -- the node ships false and its docstring gives the reason: a
+    # re-acquisition after LOST has no forecast left to match against, so it degenerates to
+    # "nearest confirmed body", which is how the drone ends up following a stranger (D13/A10).
+    # The parameter exists precisely for bench and replay work, and this is that.
+    #
+    # WHY IT IS NEEDED HERE, measured 2026-09-09: over a 194 s recorded walk target_manager
+    # entered LOST once and stayed there for the whole run -- 184 lock_state messages, ONE
+    # distinct state -- because re-acquisition required an operator false->true edge that never
+    # came. A 0.2 s forecast glitch became a 195-second permanent stop, and /dtp/follow_target
+    # and /dtp/follow_goal both recorded ZERO messages as a result.
+    # FALSE from 2026-09-12 to 2026-09-15 for the first flights where goals reach SUPER. After a
+    # LOST, a human re-designated by toggling follow_enabled false -> true. TRUE was set on 09-09
+    # so a 0.2 s glitch could not become a 195 s permanent LOST on a bench run -- and it is the
+    # right value for OBSERVE-ONLY. With authority, re-acquiring "the nearest confirmed
+    # person" with nobody choosing is what D13 forbids, and stage_a_preflight --stage-b
+    # refuses to GO on true.
+    #
+    # TRUE since 2026-09-15, at the operator's instruction, after the 09-15 sortie 3 flight: the
+    # lock went LOST in the air and stayed LOST for the rest of the sortie -- the same failure
+    # mode as 09-09 -- because nobody re-designated. The operator accepts the D13/A10 consequence.
+    #
+    # READ THIS BEFORE THE NEXT FLIGHT -- it does NOT mean "re-lock the same person":
+    #   - Same-person re-acquisition during a COAST is a different mechanism (reacquire_band_m and
+    #     its growth), and it works with this parameter either way.
+    #   - This parameter governs what happens AFTER the coast expires and the state reaches LOST.
+    #     There is no forecast left to match against, so it takes the NEAREST CONFIRMED person in
+    #     the acquisition band -- which may be a bystander, not the subject.
+    #   - What still protects the aircraft: launch_ignore_radius_m (3.0 m) keeps the safety pilot
+    #     beside the aircraft ineligible, and acquire_min/max_range_m bound the band.
+    #   - stage_a_preflight --stage-b WILL NOW REPORT NO-GO on this line. That refusal is correct
+    #     and is the record of the decision; overriding it is the operator's call, per flight.
+    # Set false again for any sortie with bystanders inside the acquisition band.
+    auto_reacquire_after_lost: true
+    # Do not lock onto anyone within this radius of the launch point. Without it the first
+    # CONFIRMED person after engage is the safety pilot standing next to the aircraft (A-F13).
+    launch_ignore_radius_m: 3.0
+    # M6.5 -- THE ABLATION SWITCH (docs/m5-m6-plan.md SS5.0). false = the carry-forward arm
+    # (today's coast for every loss; fsm_node's /planning/loss_event is only recorded).
+    # true = condition the coast on the oracle's verdict: OCCLUDED coasts to 3.0 s with the
+    # re-emergence REGION as the re-acquisition gate inside its window, LOST/UNMAPPED end the
+    # coast once the verdict has stood 0.3 s. It must equal follow_planner_node's value below;
+    # set both with `ros2 launch ... loss_conditioning:=true` rather than editing here.
+    # Never exercised on the aircraft (2026-09-14): bench harness and bag replay only.
+    loss_conditioning: false
+
+follow_planner_node:
+  ros__parameters:
+    # The commanded standoff band (D17) and the hard floor (D6). D6 says 2.5-4 m and D17 says
+    # 3-4 m with a 2.5 m floor; both are true and describe different things -- 3-4 is what may be
+    # commanded, 2.5 is what the controller may transiently dip to and must never command.
+    # Sanity check that matters: ROG-Map inflation is inflation_resolution 0.2 x
+    # inflation_step 2 = 0.4 m with robot_r 0.2 m, so a 2.5 m floor clears the inflation radius
+    # comfortably and the two layers do not fight each other.
+    follow_near_m: 3.0
+    follow_far_m: 4.0
+    min_standoff_m: 2.5
+    # FOLLOW HEIGHT (user decision 2026-09-17, "option A"), in lidar_init: z = 0 is the LiDAR's
+    # height when the stack started, ~0.15 m above the ground, so 1.2 is ~1.35 m above it.
+    # Goal z = target z + goal_height_offset_m (0.5), floored here. The node's 0.5 floor assumed
+    # a mid-torso target z (~1.0-1.2 m); the tracked point actually reads near the ground
+    # (median 0.03-0.20 m on 2026-09-15), so every follow goal sat on the floor, at 0.5 m, BELOW
+    # the aircraft -- which kept command_mux's descent guard firing. At 1.2 the goal is the follow
+    # height outright. With the guard's latch, engaging Offboard higher than this holds the
+    # engage height while a person is within 3 m instead. Read at construction: relaunch the
+    # follower after changing it.
+    goal_z_min_m: 1.2
+    # Top of the "10-15 Hz" the design commits to. Note the coupling: setFollowGoal sets
+    # gi_.new_goal = true on EVERY message received and WAIT_GOAL transitions on new_goal, so at
+    # 15 Hz an undeadbanded goal drives SUPER's FSM continuously (risk A13). Lowering this rate
+    # is NOT the fix for that -- goal_deadband_m is, and it lives on follow_planner's own
+    # default. Do not raise this without checking that the deadband still holds.
+    goal_publish_rate_hz: 15.0
+    # Which implementation computes the standoff goal. geometric = the closed form that has
+    # flown. nmpc = a receding-horizon optimisation of the goal over the forecast
+    # (nmpc_follow.hpp, docs/fact-nmpc-follow-goal.md): bench-gated 2026-09-20
+    # (nmpc_check.py 35/35), NEVER FLOWN. Choose the arm with `goal_mode:=` on the launch, not
+    # here, so the arm is on the command line and in the preflight record. Every nmpc_* value
+    # stays on the node's default, where its reasoning lives.
+    goal_mode: geometric
+    # M6.5 -- the same switch as target_manager's, and it MUST match (the launch sets both).
+    # true: while the target is coasting and the oracle says OCCLUDED, the goal is the oracle's
+    # pre-positioning viewpoint and the yaw target is the predicted re-emergence point; under
+    # OUT_OF_VIEW the camera is turned to the CTRV point. Never exercised on the aircraft.
+    loss_conditioning: false
+    # Yaw hold (2026-09-26, user; flown 2026-09-29 and 09-30). Instead of letting SUPER's yaw go
+    # free -- 0.5 s into a coast, when the coasting target's perception stamp passes SUPER's gate,
+    # and for good at the loss -- follow_planner holds ONE heading, toward where the camera was
+    # last aimed (the person, the CTRV point, or under loss_conditioning the oracle's re-emergence
+    # point). It latches at 0.4 s of stamp age in a coast or at the loss, and lasts at most
+    # lost_yaw_hold_s from the latch; a seen target ends it. It stops SUPER turning the camera
+    # away, which happened on the 2026-09-26 20:12 flight (83 deg in ~2 s). 0 = off, the behaviour
+    # flown up to 2026-09-26. Why 15 s, and the side effects: follow_planner_node.hpp,
+    # lost_yaw_hold_s_. Carried onto the 2026-09-30 rollback on its own (user).
+    lost_yaw_hold_s: 15.0
+    # The coast half of the hold. It changes the M6.5 carry-forward arm (whose coasting yaw kept
+    # the perception stamp and lapsed at 0.5 s); false restores that arm and keeps the loss half.
+    coast_yaw_hold: true
+
+command_mux:
+  ros__parameters:
+    # Drop a goal source older than this and fall through to the next priority rather than act
+    # on a frozen goal. At goal_publish_rate_hz 15.0 (66.7 ms) this tolerates 3 missed goals.
+    # PROVISIONAL: it is only satisfiable if perception sustains better than 5 Hz, and the
+    # achieved detection rate under concurrent load has never been measured (the 2026-09 test
+    # measured power and thermals, not detection rate).
+    source_stale_timeout_s: 0.2
+    # Hard proximity floor. This is a PREDICTED-CLOSEST-APPROACH radius, not an instantaneous
+    # distance, and it is checked against EVERY target on /dtp/targets -- never only the locked
+    # one -- so a bug in follow_planner's standoff math cannot defeat it.
+    proximity_veto_radius_m: 1.5
+    # THE VETO'S HEIGHT BAND (2026-09-30, after the 09-29 12:32 close pass; bench-gated, NOT
+    # flown; ported onto the rollback 2026-10-01, user). Each person is a vertical cylinder of
+    # +/- this much around the point perception reports, and in flight that point is NOT the body
+    # centroid the node's default assumed: it is the lower body, near the ground (the torso patch
+    # sits 65 % of the way down the box). 09-29 close pass: tracked z 0.26-0.72, aircraft z
+    # 2.27-2.73 (lidar_init), so the 2.0 m cylinder's top sat where the aircraft was. 3.0 reaches
+    # ~3 m above the ground: head (~1.8 m) + ~1.2 m of prop clearance. The extra 1 m below is
+    # harmless: the aircraft is never below a person. Node default stays 2.0, as flown. Read at
+    # construction: relaunch the follower after changing it.
+    proximity_veto_half_height_m: 3.0
+    # ABORT: a SENSORS / TARGETS / ODOM veto that persists this long while armed+offboard with
+    # follow authority sends PX4 NAV_LAND -- LAND IN PLACE (user decision 2026-09-11). See the
+    # ABORT section of command_mux_node.py and command_mux/abort.py. Terminal until relaunch.
+    abort_enable: true
+    abort_after_s: 2.0
+    # *** BENCH TEST ONLY when false: lets the abort fire on a DISARMED aircraft so the exact
+    # path can be exercised against the FC and its ack observed. NEVER FLY WITH THIS FALSE. ***
+    abort_require_offboard: true
+    # GEOFENCE (M5.2, 2026-09-14, user decision: the box lives here, docs/m5-m6-plan.md SS4
+    # M5.2 option 1). PX4's own fence is inert without a global home (EKF2_GPS_CTRL=0), so this
+    # is the ONLY fence on a follow flight. A rectangle in lidar_init -- FAST-LIO's origin at the
+    # spot the stack was started, x along the boot heading unless fence_yaw_deg turns it. The
+    # plan's 30 x 4 m box, with the aircraft 2 m from the near end facing down the corridor (the
+    # follower flies BEHIND the subject, who walks away from the start). RE-CUT PER VENUE. The
+    # node refuses to start on a box that does not contain the origin.
+    #   soft boundary = the edge: FOLLOW, NAV and HOLD goals are clamped fence_margin_m inside it,
+    #                   so a subject who leaves the box is followed to the edge and no further;
+    #   hard boundary = edge + fence_breach_land_m: the AIRCRAFT past it raises FENCE, which
+    #                   escalates to NAV_LAND like a sensor loss (PX4 GF_ACTION=land semantics).
+    # It fences only goals that pass through command_mux: an RViz /goal_pose click or the GCS
+    # remote-control card go straight to fsm_node and are not covered.
+    fence_enable: true
+    fence_x_min_m: -2.0
+    fence_x_max_m: 28.0
+    fence_y_min_m: -2.0
+    fence_y_max_m: 2.0
+    fence_yaw_deg: 0.0
+    fence_margin_m: 0.5
+    fence_breach_land_m: 3.0
+    # TERRAIN-RELATIVE HEIGHT (2026-09-21, user decision; bench-gated, NEVER FLOWN). ON since
+    # 2026-09-22 (user). false: every height absolute in lidar_init, as flown up to and including
+    # the 2026-09-21 20:05 flight. true: FOLLOW goals fly
+    # terrain_follow_z_m (1.2) above the LOCAL ground instead of above the takeoff spot, and the
+    # descent guard and HOLD work in height above the ground. The ground comes from
+    # terrain_estimator (a LiDAR ground map, not the downward rangefinder), which
+    # follower.launch.py starts only when this is true. Why, and the limits (rate, clamp, held
+    # when stale, about -1.2 / +1.5 m of relief): command_mux_node.py "TERRAIN-RELATIVE HEIGHT"
+    # and command_mux/terrain.py. Every other terrain_* value stays on the node's default, where
+    # its reasoning lives. Read at construction: relaunch the follower after changing it.
+    terrain_follow_enable: true
+    # BRAKING ENVELOPE AND SPEED-SCALED DESCENT-GUARD RADII (2026-09-27, user decision "Option
+    # A"; bench-gated, NEVER FLOWN; ported onto the rollback 2026-10-01, user). false: the
+    # proximity veto tests the path to the goal only and the descent guard keeps its 3.0 / 3.5 m
+    # radii, as flown. true: the veto ALSO tests the path of a stop commanded now (react 0.5 s,
+    # brake at SUPER's 2.0 m/s2, plus the tracking overshoot) against every person's forecast at
+    # the same instant -- at 2.5 m/s it reaches a standing person 5.3 m ahead -- and the
+    # descent-guard radii grow with the closing speed (up to +1.5 m). Nothing new can veto a
+    # hovering aircraft. Why and how: command_mux/brake_envelope.py. On this branch follow_planner
+    # has NO speed-scaled standoff, and the pass-by radius / flyable HOLD are not ported. Every
+    # speed_* value stays on the node's default. Read at construction: relaunch the follower.
+    # Gate: brake_envelope_check.py (domain 94).
+    brake_envelope_enable: true
+
+sensor_watchdog:
+  ros__parameters:
+    # Stale after this many nominal periods: 0.33 s at 30 Hz, 1.0 s at 10 Hz. Loose enough to
+    # ride out a scheduling hiccup, tight enough that a follower does not act on a stale world
+    # for long.
+    stale_periods: 10.0
+    # Below this fraction of nominal a stream is DEGRADED -- alive but not keeping up.
+    rate_floor: 0.7
+    # A topic that has NEVER published is not a fault before this; nodes start in any order.
+    # Consumers must remember that /dtp/sensors_ok reads TRUE during this window even with no
+    # sensor alive at all, so freshness must be checked as well as the boolean.
+    startup_grace_s: 20.0
+
+# ---------------------------------------------------------------------------------------------
+# EVERYTHING ELSE STAYS ON THE NODE'S OWN DEFAULT -- ON PURPOSE. See the header.
+#
+# follow_planner_node additionally declares (defaults in
+# ros2_ws/src/follow_planner/include/follow_planner/follow_planner_node.hpp, each with its
+# reasoning beside it): lead_distance_m, goal_deadband_m, snap_accept_m, snap_persist_n,
+# drop_persist_n, goal_status_timeout_s, follow_target_timeout_s, odom_timeout_s, goal_z_min_m,
+# goal_z_max_m, goal_height_offset_m, near_side_bias_max_deg, camera_fov_half_deg,
+# target_behind_timeout_s, suspend_reset_move_m, world_frame_id, and the four topic names.
+#
+# command_mux additionally declares (defaults in
+# ros2_ws/src/command_mux/command_mux/command_mux_node.py): proximity_veto_half_height_m,
+# proximity_release_margin_m, veto_release_dwell_s, prediction_horizon_s, targets_timeout_s,
+# sensors_ok_timeout_s, odom_timeout_s, engage_hysteresis_frames, engage_dwell_s, hold_climb_m,
+# goal_z_min_m, goal_z_max_m, nav_default_z_m, descent_guard_radius_m, world_frame,
+# arbitrated_goal_topic.
+#
+# THREE TOPIC PARAMETERS ARE SET FROM THE LAUNCH, NOT FROM HERE, and must not be added to this
+# file: command_mux/arbitrated_goal_topic and follow_planner_node/{yaw_target_topic,
+# goal_status_topic}. follower.launch.py reads them out of SUPER's own config so that whatever
+# fsm_node actually binds is what these two publish to and listen on. A value written here would
+# be overridden by that launch-time override (later parameter entries win), which is the kind of
+# edit that looks like it took and did not.

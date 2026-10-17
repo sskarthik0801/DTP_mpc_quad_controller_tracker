@@ -1,0 +1,277 @@
+diff --git a/super_planner/config/follow_test_ros2.yaml b/super_planner/config/follow_test_ros2.yaml
+--- a/super_planner/config/follow_test_ros2.yaml
++++ b/super_planner/config/follow_test_ros2.yaml
+@@ -274,6 +274,13 @@
+ # sweeps rho_star, lateral_n and r_excl.
+ loss_oracle:
+   enable: true
++  # 0008 -- dtp_msgs/VisibilityField on /planning/visibility for EVERY locked frame, seen or
++  # coasting: per azimuth around the person, how far out a viewpoint stays clear of the inflated
++  # map and what fraction of the person it would see. For follow_planner's goal_mode nmpc
++  # (docs/fact-nmpc-follow-goal.md). Off in code; ~0.4 % of a core here. Nothing consumes it
++  # unless follow_planner runs goal_mode nmpc with nmpc_w_vis > 0.
++  visibility_enable: true
++  visibility_topic: "/planning/visibility"
+   target_topic: "/dtp/follow_target"
+   event_topic: "/planning/loss_event"
+   # Camera optical centre in the body (lidar_imu) frame: static_calib_tf's deployed
+diff --git a/super_planner/include/fsm/config.hpp b/super_planner/include/fsm/config.hpp
+--- a/super_planner/include/fsm/config.hpp
++++ b/super_planner/include/fsm/config.hpp
+@@ -59,6 +59,9 @@
+         // ROG-Map and publishes dtp_msgs/LossEvent. Default OFF. Parameters are the paper's
+         // SS2.4 starting values; see super_core/loss_oracle.hpp.
+         bool loss_oracle_en{false};
++        // 0008: the visibility field for follow_planner's goal_mode nmpc. Needs loss_oracle/enable.
++        bool loss_oracle_visibility_en{false};
++        string loss_oracle_visibility_topic;
+         string loss_oracle_target_topic, loss_oracle_event_topic;
+         vector<double> loss_oracle_camera_offset_body, loss_oracle_sample_dz;
+         double loss_oracle_camera_yaw_offset_deg{}, loss_oracle_fov_half_deg{}, loss_oracle_fov_floor_deg{},
+@@ -100,6 +103,9 @@
+ 
+             // M6.1 -- loss oracle (ROS2 only; ignored by the ROS1 build).
+             loader.LoadParam("loss_oracle/enable", loss_oracle_en, false);
++            loader.LoadParam("loss_oracle/visibility_enable", loss_oracle_visibility_en, false);
++            loader.LoadParam("loss_oracle/visibility_topic", loss_oracle_visibility_topic,
++                             string("/planning/visibility"));
+             loader.LoadParam("loss_oracle/target_topic", loss_oracle_target_topic, string("/dtp/follow_target"));
+             loader.LoadParam("loss_oracle/event_topic", loss_oracle_event_topic, string("/planning/loss_event"));
+             loader.LoadParam("loss_oracle/camera_offset_body", loss_oracle_camera_offset_body,
+diff --git a/super_planner/include/ros_interface/ros2/fsm_ros2.hpp b/super_planner/include/ros_interface/ros2/fsm_ros2.hpp
+--- a/super_planner/include/ros_interface/ros2/fsm_ros2.hpp
++++ b/super_planner/include/ros_interface/ros2/fsm_ros2.hpp
+@@ -38,6 +38,7 @@
+ #include "dtp_msgs/msg/goal_status.hpp"
+ #include "dtp_msgs/msg/target.hpp"
+ #include "dtp_msgs/msg/loss_event.hpp"
++#include "dtp_msgs/msg/visibility_field.hpp"
+ #include "super_core/loss_oracle.hpp"
+ #include "nav_msgs/msg/path.hpp"
+ #include "nav_msgs/msg/odometry.hpp"
+@@ -64,6 +65,7 @@
+         // so a classification never waits behind the planner's timers (nor they behind it).
+         rclcpp::Subscription<dtp_msgs::msg::Target>::SharedPtr loss_oracle_sub_;
+         rclcpp::Publisher<dtp_msgs::msg::LossEvent>::SharedPtr loss_event_pub_;
++        rclcpp::Publisher<dtp_msgs::msg::VisibilityField>::SharedPtr visibility_pub_;  // 0008
+         rclcpp::CallbackGroup::SharedPtr loss_oracle_cbk_group_;
+         loss_oracle::LossOracle::Ptr loss_oracle_;
+         struct LossOracleState {
+@@ -81,6 +83,7 @@
+             // The locked target's recent SEEN positions (stamp seconds, position): the shadow
+             // rule in loss_oracle.hpp. Cleared when the track changes.
+             std::deque<std::pair<double, Vec3f>> trail;
++            std::vector<uint32_t> vis_us;   // 0008: visibility-field cost, for the periodic line
+             double last_ground_warn_t{-1e9};
+         } lo_;
+ 
+@@ -372,6 +375,50 @@
+         // M6.1 -- answer every COASTING follow target (missed_frames > 0) with a LossEvent.
+         // A seen frame (missed_frames == 0) only resets the onset bookkeeping: there is nothing
+         // to classify while the camera can see the person.
++        // 0008 -- where around the person the camera could see them from, for follow_planner's
++        // goal_mode nmpc. Unlike a LossEvent it answers EVERY locked frame, seen or coasting:
++        // the point is to avoid an occlusion, not to explain one. Same callback group as the
++        // oracle, so the two never read the trail at once.
++        void publishVisibility(const dtp_msgs::msg::Target::SharedPtr &msg) {
++            if (!visibility_pub_) return;
++            const auto rs = map_ptr_->getRobotState();
++            const Vec3f centre{msg->position.x, msg->position.y, msg->position.z};
++            if (!rs.rcv || !centre.allFinite()) return;
++            std::vector<Vec3f> trail;
++            trail.reserve(lo_.trail.size());
++            for (const auto &tp : lo_.trail) trail.push_back(tp.second);
++            const auto f = loss_oracle_->visibilityField(centre, rs.p, rs.q, trail);
++            dtp_msgs::msg::VisibilityField out;
++            out.header = msg->header;
++            out.eval_stamp = nh_->get_clock()->now();
++            out.track_id = msg->track_id;
++            out.missed_frames = msg->missed_frames;
++            out.centre_p = msg->position;
++            out.camera_p.x = f.camera_p.x(); out.camera_p.y = f.camera_p.y(); out.camera_p.z = f.camera_p.z();
++            out.view_z = static_cast<float>(f.view_z);
++            out.r_near = static_cast<float>(cfg_.loss_oracle_standoff_near);
++            out.r_far = static_cast<float>(cfg_.loss_oracle_standoff_far);
++            out.az0 = static_cast<float>(f.az0);
++            out.daz = static_cast<float>(f.daz);
++            out.bins = static_cast<uint16_t>(f.vis.size());
++            out.clear_r = f.clear_r;
++            out.vis = f.vis;
++            out.unk = f.unk;
++            out.heights_used = static_cast<uint16_t>(f.heights_used);
++            out.heights_dropped = static_cast<uint16_t>(f.heights_dropped);
++            out.eval_us = f.eval_us;
++            visibility_pub_->publish(out);
++            lo_.vis_us.push_back(f.eval_us);
++            if (lo_.vis_us.size() >= 200) {
++                std::sort(lo_.vis_us.begin(), lo_.vis_us.end());
++                cout << YELLOW << " -- [Fsm] VISIBILITY FIELD: " << lo_.vis_us.size() << " fields, eval p50 "
++                     << lo_.vis_us[lo_.vis_us.size() / 2] << " us p99 " << lo_.vis_us[lo_.vis_us.size() * 99 / 100]
++                     << " us, " << f.heights_used << " of " << (f.heights_used + f.heights_dropped)
++                     << " heights knowable" << RESET << endl;
++                lo_.vis_us.clear();
++            }
++        }
++
+         void lossOracleCallback(const dtp_msgs::msg::Target::SharedPtr msg) {
+             if (!msg->is_locked_target) {
+                 return;
+@@ -393,8 +440,10 @@
+                         lo_.trail.pop_front();
+                     }
+                 }
++                publishVisibility(msg);   // 0008: a SEEN frame gets a field and no LossEvent
+                 return;
+             }
++            publishVisibility(msg);       // 0008: and so does a coasting one, about the coast point
+             const bool onset = !lo_.have_last || lo_.last_track != tid || lo_.last_missed == 0 ||
+                                missed <= lo_.last_missed;
+             lo_.last_track = tid;
+@@ -650,6 +699,12 @@
+                 lp.hidden_look_s = cfg_.loss_oracle_hidden_look_s;
+                 loss_oracle_ = std::make_shared<loss_oracle::LossOracle>(map_ptr_, lp);
+                 loss_event_pub_ = nh_->create_publisher<dtp_msgs::msg::LossEvent>(cfg_.loss_oracle_event_topic, qos);
++                if (cfg_.loss_oracle_visibility_en) {
++                    visibility_pub_ = nh_->create_publisher<dtp_msgs::msg::VisibilityField>(
++                            cfg_.loss_oracle_visibility_topic, qos);
++                    cout << YELLOW << " -- [Fsm] VISIBILITY FIELD -> " << cfg_.loss_oracle_visibility_topic
++                         << RESET << endl;
++                }
+                 loss_oracle_cbk_group_ = nh_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+                 rclcpp::SubscriptionOptions so;
+                 so.callback_group = loss_oracle_cbk_group_;
+diff --git a/super_planner/include/super_core/loss_oracle.hpp b/super_planner/include/super_core/loss_oracle.hpp
+--- a/super_planner/include/super_core/loss_oracle.hpp
++++ b/super_planner/include/super_core/loss_oracle.hpp
+@@ -107,6 +107,7 @@
+ #include <chrono>
+ #include <cmath>
+ #include <cstdint>
++#include <limits>
+ #include <memory>
+ #include <random>
+ #include <string>
+@@ -187,6 +188,27 @@
+         bool hidden_look{false};
+         double hidden_look_min_w{0.5};
+         double hidden_look_s{1.5};
++        // Visibility field (0008, for follow_planner's goal_mode nmpc): the annulus is
++        // standoff_near..standoff_far and the bins are viewpoint_az_step_deg, the viewpoint
++        // sweep's own. Fewer heights than the classifier: three resolve a torso, and this runs
++        // on every frame, seen or not.
++        std::vector<double> vis_sample_dz{-0.5, 0.0, 0.4};
++        // Azimuths sampled INSIDE each bin, spread evenly across it. One ray at the bin's centre
++        // is not enough: a trunk 2 m from the person casts an ~11 deg shadow, narrower than a
++        // 15 deg bin, so a centre-only field puts the shadow at the nearest bin CENTRE (up to
++        // 7 deg out) and calls the neighbouring bin clear when half of it is dark. End to end
++        // that sent the goal deeper INTO the shadow (visibility_field_check V9). With 3, a bin
++        // reports the fraction of its own width that is dark.
++        int vis_sub_az{3};
++    };
++
++    // Where around the person the camera could see them FROM. See dtp_msgs/VisibilityField.
++    struct VisField {
++        Vec3f centre_p{Vec3f::Zero()}, camera_p{Vec3f::Zero()};
++        double view_z{0.0}, az0{-M_PI}, daz{0.0};
++        std::vector<float> clear_r, vis, unk;
++        int heights_used{0}, heights_dropped{0};
++        uint32_t eval_us{0};
+     };
+ 
+     struct Cluster {
+@@ -617,6 +639,95 @@
+             return r;
+         }
+ 
++        // The viewpoint sweep of evaluate(), run for EVERY azimuth and reported whole instead of
++        // reduced to its winner. Per bin: how far out from standoff_near a viewpoint stays clear
++        // of the INFLATED occupancy (what SUPER would accept as a goal), then from that
++        // viewpoint one ray to each height of the person the map can know. Reads the map, never
++        // writes it, draws no random numbers, and does not touch evaluate(): the LossEvent
++        // stream stays bit-for-bit what it was.
++        VisField visibilityField(const Vec3f &centre, const Vec3f &body_p, const Quatf &body_q,
++                                 const std::vector<Vec3f> &trail = std::vector<Vec3f>{}) const {
++            using clock = std::chrono::steady_clock;
++            const auto t0 = clock::now();
++            trail_ = &trail;
++            VisField f;
++            f.centre_p = centre;
++            const Eigen::Matrix3d R = body_q.normalized().toRotationMatrix();
++            const Vec3f cam_off(p_.camera_offset_body[0], p_.camera_offset_body[1], p_.camera_offset_body[2]);
++            f.camera_p = body_p + R * cam_off;
++
++            // The same floor evaluate() applies: nothing under the virtual ground, and nothing
++            // under the LiDAR's downward view limit at the person's range. Unlike evaluate(),
++            // no stand-in height is invented when all are dropped: heights_used 0 means "this
++            // field says nothing", and the consumer must read it that way.
++            const double d_t = std::hypot(centre.x() - f.camera_p.x(), centre.y() - f.camera_p.y());
++            const double z_floor = std::max(ground_z_ + res_,
++                                            f.camera_p.z() - d_t * std::tan(p_.fov_floor_deg * M_PI / 180.0) + res_);
++            std::vector<double> heights;
++            for (const double dz : p_.vis_sample_dz) {
++                const double z = centre.z() + dz;
++                if (z <= z_floor || z >= ceil_z_ - res_) {
++                    ++f.heights_dropped;
++                } else {
++                    heights.push_back(z);
++                }
++            }
++            f.heights_used = static_cast<int>(heights.size());
++            f.view_z = std::min(std::max(centre.z() + p_.viewpoint_height_offset, p_.viewpoint_z_min),
++                                p_.viewpoint_z_max);
++
++            const double step = std::max(1.0, p_.viewpoint_az_step_deg) * M_PI / 180.0;
++            const int bins = std::max(1, static_cast<int>(std::lround(2.0 * M_PI / step)));
++            f.daz = 2.0 * M_PI / bins;
++            const float nan = std::numeric_limits<float>::quiet_NaN();
++            f.clear_r.assign(bins, nan);
++            f.vis.assign(bins, nan);
++            f.unk.assign(bins, nan);
++            const double r_mid = 0.5 * (p_.standoff_near + p_.standoff_far);
++            for (int b = 0; b < bins; ++b) {
++                const double az = f.az0 + b * f.daz;
++                const double ca = std::cos(az), sa = std::sin(az);
++                double clear = -1.0;
++                for (double rad = p_.standoff_near; rad <= p_.standoff_far + 1e-9; rad += res_) {
++                    const GridType gt = map_->getInfGridType(Vec3f(centre.x() + rad * ca, centre.y() + rad * sa, f.view_z));
++                    if (gt == GridType::OCCUPIED || gt == GridType::OUT_OF_MAP) break;
++                    clear = rad;
++                }
++                if (clear < 0.0) continue;                 // not even the near edge: stays NaN
++                f.clear_r[b] = static_cast<float>(clear);
++                if (heights.empty()) continue;
++                const double rv = std::min(clear, r_mid);
++                const int n_sub = std::max(1, p_.vis_sub_az);
++                int n_free = 0, n_unk = 0, n_rays = 0;
++                for (int j = 0; j < n_sub; ++j) {
++                    const double a = az + f.daz * ((j + 0.5) / n_sub - 0.5);   // evenly across the bin
++                    const Vec3f q(centre.x() + rv * std::cos(a), centre.y() + rv * std::sin(a), f.view_z);
++                    for (const double z : heights) {
++                        Vec3f hit;
++                        RayLabel lab = castRay(q, Vec3f(centre.x(), centre.y(), z), p_.r_excl, &hit);
++                        // UNKNOWN beside a known obstacle is not "cannot know". ROG-Map holds a
++                        // trunk as a one-cell shell of the face the sensor lit; a ray from any
++                        // other viewpoint grazes past that shell into the trunk's unseen side,
++                        // and its first non-free cell reads UNKNOWN. If the INFLATED map calls
++                        // that cell occupied, it is within the inflation radius of a surface the
++                        // sensor did see: inside the obstacle, to every purpose. Without this a
++                        // tube dead between the viewpoint and the person read 0.56 blocked, not
++                        // 1.0 (visibility_field_check V9). evaluate() is NOT given this rule:
++                        // the LossEvent stream stays bit for bit what it was.
++                        if (lab == RAY_UNK && map_->getInfGridType(hit) == GridType::OCCUPIED) lab = RAY_OCC;
++                        ++n_rays;
++                        if (lab == RAY_FREE) ++n_free;
++                        else if (lab == RAY_UNK) ++n_unk;
++                    }
++                }
++                f.vis[b] = static_cast<float>(n_free) / n_rays;
++                f.unk[b] = static_cast<float>(n_unk) / n_rays;
++            }
++            trail_ = nullptr;   // it pointed at the caller's vector; evaluate() sets its own
++            f.eval_us = us_since(t0);
++            return f;
++        }
++
+     private:
+         enum RayLabel { RAY_FREE, RAY_OCC, RAY_UNK };
+ 

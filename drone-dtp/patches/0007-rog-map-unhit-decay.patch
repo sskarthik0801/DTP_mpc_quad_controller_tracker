@@ -1,0 +1,487 @@
+diff --git a/rog_map/include/rog_map/rog_map_core/config.hpp b/rog_map/include/rog_map/rog_map_core/config.hpp
+--- a/rog_map/include/rog_map/rog_map_core/config.hpp
++++ b/rog_map/include/rog_map/rog_map_core/config.hpp
+@@ -230,6 +230,35 @@
+                                             "positive, z_below and z_above non-negative");
+             }
+ 
++            // DTP visible-but-unhit decay (2026-09-15, patch 0007) -- see ProbMap::unhitDecayPass().
++            // An occupied cell the sensor is looking straight at (inside its field of view, within
++            // range, no observed occupied cell in the way) that NO ray reaches for a while, hit or
++            // miss, is a cell the LiDAR's beams are returning nothing from: it is decayed as if every
++            // ray that should have crossed it had been a miss. A beam that returns nothing (sky)
++            // casts no ray in ROG-Map, so without this a person mapped from a grounded aircraft
++            // stays occupied for ever. Off by default.
++            loader.LoadParam(name_space + "/unhit_decay/enable", unhit_decay_en, false);
++            loader.LoadParam(name_space + "/unhit_decay/range_max", unhit_decay_range_max, 8.0);
++            loader.LoadParam(name_space + "/unhit_decay/fov_elev_min_deg", unhit_decay_elev_min_deg, -6.0);
++            loader.LoadParam(name_space + "/unhit_decay/fov_elev_max_deg", unhit_decay_elev_max_deg, 50.0);
++            loader.LoadParam(name_space + "/unhit_decay/window_s", unhit_decay_window_s, 3.0);
++            loader.LoadParam(name_space + "/unhit_decay/period_s", unhit_decay_period_s, 0.5);
++            loader.LoadParam(name_space + "/unhit_decay/scan_rate_hz", unhit_decay_scan_rate_hz, 10.0);
++            loader.LoadParam(name_space + "/unhit_decay/rays_per_sr_s", unhit_decay_rays_per_sr_s, 10000.0);
++            loader.LoadParam(name_space + "/unhit_decay/min_expected_rays", unhit_decay_min_expected_rays, 20.0);
++            loader.LoadParam(name_space + "/unhit_decay/max_miss_per_pass", unhit_decay_max_miss_per_pass, 50);
++            if (unhit_decay_en &&
++                !(unhit_decay_range_max > 0.0 && unhit_decay_window_s >= 0.0 && unhit_decay_period_s > 0.0 &&
++                  unhit_decay_scan_rate_hz > 0.0 && unhit_decay_rays_per_sr_s > 0.0 &&
++                  unhit_decay_min_expected_rays >= 0.0 && unhit_decay_max_miss_per_pass >= 1 &&
++                  unhit_decay_elev_min_deg < unhit_decay_elev_max_deg)) {
++                throw std::invalid_argument("rog_map/unhit_decay: range_max, period_s, scan_rate_hz and "
++                                            "rays_per_sr_s must be positive, window_s and min_expected_rays "
++                                            "non-negative, max_miss_per_pass >= 1, fov_elev_min_deg < "
++                                            "fov_elev_max_deg");
++            }
++            unhit_decay_period_frames = std::max(1, (int) std::lround(unhit_decay_period_s * unhit_decay_scan_rate_hz));
++
+             resetMapSize();
+ 
+             /// Probabilistic Update
+@@ -371,6 +400,13 @@
+         double target_exclusion_radius{}, target_exclusion_z_below{}, target_exclusion_z_above{};
+         double target_exclusion_max_age{}, target_exclusion_max_speed{};
+ 
++        /* DTP visible-but-unhit decay */
++        bool unhit_decay_en{false};
++        double unhit_decay_range_max{}, unhit_decay_elev_min_deg{}, unhit_decay_elev_max_deg{};
++        double unhit_decay_window_s{}, unhit_decay_period_s{}, unhit_decay_scan_rate_hz{};
++        double unhit_decay_rays_per_sr_s{}, unhit_decay_min_expected_rays{};
++        int unhit_decay_max_miss_per_pass{}, unhit_decay_period_frames{1};
++
+         void resetMapSize() {
+             int inflation_ratio = ceil(inflation_resolution / resolution);
+ 
+diff --git a/rog_map/include/rog_map/prob_map.h b/rog_map/include/rog_map/prob_map.h
+--- a/rog_map/include/rog_map/prob_map.h
++++ b/rog_map/include/rog_map/prob_map.h
+@@ -130,6 +130,47 @@
+             return last_exclusion_stats_;
+         }
+ 
++        /* DTP visible-but-unhit decay (2026-09-15, patch 0007; docs/fact-rogmap-unhit-decay.md).
++         *
++         * ROG-Map only casts a ray to a point that RETURNED. A beam that returns nothing -- the sky,
++         * open space past the sensor's reach -- casts no ray and clears no cell. So a person seen
++         * from a grounded aircraft (sensor 0.15 m up, every part of them above the horizon) leaves
++         * occupied cells that no ray ever crosses again: on the 2026-09-14 flight-day bags 113 of
++         * 457 such cells were still occupied 7 minutes after the walker left, every one with fewer
++         * than the 31 rays a cell at p_max needs and most with none at all.
++         *
++         * The decay pass, every period_frames scans, sweeps the occupied cells within range_max of
++         * the sensor. Each one that is inside the sensor's vertical field of view (in the body frame
++         * of the pose) gets a clock: it counts passes during which NO ordinary ray reached the cell,
++         * neither a hit nor a miss (probabilisticMapFromCache() resets it on either -- a ray that
++         * does cross the cell is evidence ROG-Map already weighs, and adding to it would double
++         * count, which erodes the ground at grazing incidence). Once the cell has gone window_s
++         * unobserved AND the number of rays the sensor would have sent through it in that time
++         * (rays_per_sr_s * res^2 / r^2 * t) reaches min_expected_rays, and its line of sight from
++         * the sensor holds no occupied cell that has itself been observed within the last period, it
++         * receives that many misses per period -- as if each of those rays had been a miss, which is
++         * what "the sensor sees nothing there" means. A cell this pass has taken below l_occ keeps
++         * decaying until it is known free; an occupied cell that is itself unobserved does not
++         * block the view of the cells behind it, so the layers of a remnant go together.
++         *
++         * Never touched: cells out of the field of view, beyond range_max, behind an observed
++         * occupied cell, at or beyond the virtual planes, and any cell an ordinary ray reached
++         * within the window. A real surface in view returns hits every scan; the guard against a
++         * thin object at long range is min_expected_rays (few expected rays -> long window).
++         * Off by default; ON in follow_test_ros2.yaml. Gate: drone-dtp/scripts/unhit_decay_check.py. */
++        struct UnhitDecayStats {
++            long passes{0};          // decay passes run
++            long candidates{0};      // occupied (or self-emptied) cells in range and in the field of view
++            long visible{0};         // ...due (unobserved for the window) and with a clear line of sight
++            long decayed{0};         // ...that received misses (== visible)
++            long emptied{0};         // ...that left OCCUPIED this pass
++            double last_pass_ms{0.0}, max_pass_ms{0.0};
++        };
++
++        UnhitDecayStats getUnhitDecayStats() const {
++            return unhit_stats_;
++        }
++
+     protected:
+         TargetExclusion frame_exclusion_{};
+         TargetExclusionStats last_exclusion_stats_{};
+@@ -199,6 +240,16 @@
+ 
+         void updateLocalBox(const Vec3f &cur_odom);
+ 
++        /* DTP visible-but-unhit decay -- see the public comment above. */
++        std::vector<uint8_t> unhit_passes_;      // 0: a ray reached it since the last pass; n: unobserved for n-1 periods
++        raycaster::RayCaster decay_raycaster_;
++        long unhit_frame_counter_{0};
++        UnhitDecayStats unhit_stats_{};
++
++        void unhitDecayPass(const Pose &pose);
++
++        bool unhitLineOfSightClear(const Vec3f &sensor, const Vec3f &cell_center);
++
+         void resetLocalMap() override;
+     };
+ }
+\ No newline at end of file
+diff --git a/rog_map/include/rog_map_ros/rog_map_ros2.hpp b/rog_map/include/rog_map_ros/rog_map_ros2.hpp
+--- a/rog_map/include/rog_map_ros/rog_map_ros2.hpp
++++ b/rog_map/include/rog_map_ros/rog_map_ros2.hpp
+@@ -46,6 +46,7 @@
+ #include <visualization_msgs/msg/marker.hpp>
+ 
+ #include <rog_map/rog_map.h>
++#include <iomanip>
+ #include <super_utils/color_msg_utils.hpp>
+ 
+ namespace rog_map {
+@@ -277,10 +278,41 @@
+                 logTargetExclusion(temp_exclusion, no_target, stale);
+                 publishTargetExclusion(temp_exclusion, temp_stamp);
+             }
++            if (cfg_.unhit_decay_en) {
++                logUnhitDecay();
++            }
+ 
+             writeTimeConsumingToLog(time_log_file_);
+         }
+ 
++        /* DTP visible-but-unhit decay: one line per 5 s while it has something to say. */
++        struct UnhitDecayLog {
++            double last_log_t{0.0};
++            UnhitDecayStats last{};
++        } ud_;
++
++        void logUnhitDecay() {
++            const double now = nh_->get_clock()->now().seconds();
++            if (now - ud_.last_log_t < 5.0) {
++                return;
++            }
++            const auto st = getUnhitDecayStats();
++            const long passes = st.passes - ud_.last.passes;
++            const long visible = st.visible - ud_.last.visible;
++            const long decayed = st.decayed - ud_.last.decayed;
++            const long emptied = st.emptied - ud_.last.emptied;
++            ud_.last_log_t = now;
++            ud_.last = st;
++            if (passes == 0 || visible == 0) {
++                return;
++            }
++            std::cout << color_text::CYAN << " -- [ROG] UNHIT DECAY: " << passes << " passes, "
++                      << visible << " unobserved cells in clear view, "
++                      << decayed << " decayed, " << emptied << " left occupied; pass " << std::fixed
++                      << std::setprecision(2) << st.last_pass_ms << " ms (max " << st.max_pass_ms << ")"
++                      << RESET << std::endl;
++        }
++
+         void logTargetExclusion(const TargetExclusion& ex, int no_target, int stale) {
+             // Update thread only from here on: the per-scan counts were handed over under the lock.
+             te_.period_no_target += no_target;
+@@ -528,6 +560,16 @@
+                           "out of this map; the planner will not avoid them" << RESET << std::endl;
+             }
+ 
++            if (cfg_.unhit_decay_en) {
++                std::cout << color_text::CYAN << " -- [ROG] UNHIT DECAY ENABLE: range " << cfg_.unhit_decay_range_max
++                          << " m, fov [" << cfg_.unhit_decay_elev_min_deg << ", " << cfg_.unhit_decay_elev_max_deg
++                          << "] deg, window " << cfg_.unhit_decay_window_s << " s, every "
++                          << cfg_.unhit_decay_period_frames << " scans, " << cfg_.unhit_decay_rays_per_sr_s
++                          << " rays/sr/s, min " << cfg_.unhit_decay_min_expected_rays
++                          << " expected rays -- an occupied cell in clear view that no ray reaches any more "
++                          "is decayed as if every expected ray through it had missed" << RESET << std::endl;
++            }
++
+             if (cfg_.ros_callback_en) {
+                 rc_.odom_me_cbk_group = nh_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+                 rc_.cloud_me_cbk_group = nh_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+diff --git a/rog_map/src/rog_map/prob_map.cpp b/rog_map/src/rog_map/prob_map.cpp
+--- a/rog_map/src/rog_map/prob_map.cpp
++++ b/rog_map/src/rog_map/prob_map.cpp
+@@ -22,6 +22,7 @@
+ */
+ 
+ #include <rog_map/prob_map.h>
++#include <chrono>
+ using namespace rog_map;
+ using namespace super_utils;
+ 
+@@ -83,6 +84,9 @@
+     raycast_data_.raycaster.setResolution(cfg_.resolution);
+     raycast_data_.operation_cnt.resize(map_size, 0);
+     raycast_data_.hit_cnt.resize(map_size, 0);
++    // DTP visible-but-unhit decay: one byte per cell, see prob_map.h.
++    unhit_passes_.assign(map_size, 0);
++    decay_raycaster_.setResolution(cfg_.resolution);
+ 
+     resetLocalMap();
+ 
+@@ -347,6 +351,14 @@
+         time_consuming_[2] = t_update.stop();
+         map_empty_ = false;
+     }
++    // DTP visible-but-unhit decay, after this frame's hits have landed so a cell hit now is not
++    // counted as unhit. Frames, not wall time: the evidence is scans.
++    if (cfg_.unhit_decay_en && cfg_.raycasting_en) {
++        unhit_frame_counter_++;
++        if (unhit_frame_counter_ % cfg_.unhit_decay_period_frames == 0) {
++            unhitDecayPass(pose);
++        }
++    }
+     inf_map_->getInflationNumAndTime(time_consuming_[6], time_consuming_[3]);
+     time_consuming_[0] = tc.stop();
+ 
+@@ -586,6 +598,7 @@
+         // nothing need to do
+     }
+     ret = 0;
++    unhit_passes_[hash_id] = 0;
+ }
+ 
+ void ProbMap::probabilisticMapFromCache() {
+@@ -602,6 +615,9 @@
+         globalIndexToLocalIndex(id_g, id_l);
+         int hash_id = getLocalIndexHash(id_l);
+         globalIndexToPos(id_g, pos);
++        // DTP unhit decay: any ordinary ray through the cell, hit or miss, is evidence ROG-Map
++        // already weighs; the decay is only for cells no ray reaches at all.
++        unhit_passes_[hash_id] = 0;
+         if (raycast_data_.hit_cnt[hash_id] > 0) {
+             hitPointUpdate(pos, hash_id, raycast_data_.hit_cnt[hash_id]);
+         }
+@@ -616,6 +632,7 @@
+ 
+ void ProbMap::hitPointUpdate(const Vec3f& pos, const int& hash_id, const int& hit_num) {
+     float& ret = occupancy_buffer_[hash_id];
++    unhit_passes_[hash_id] = 0;   // DTP unhit decay: a ray reaching the cell restarts its clock
+     GridType from_type = UNDEFINED;
+ 
+     if (isOccupied(ret)) {
+@@ -821,6 +838,9 @@
+             // (pushed above), so the space in front of the person is cleared as usual.
+             if (exclusion_on && cellInsideExclusion(pt_id_g)) {
+                 last_exclusion_stats_.hits_dropped++;
++                // The ray did reach the cell; the exclusion only declines to weigh it. Without
++                // this the unhit decay reads a tube beside the followed person as unobserved.
++                unhit_passes_[getHashIndexFromGlobalIndex(pt_id_g)] = 0;
+             }
+             else {
+                 insertUpdateCandidate(pt_id_g, true);
+@@ -844,6 +864,7 @@
+                 // M5.3a: no misses inside the target cylinder either -- see ProbMap::TargetExclusion.
+                 if (check_exclusion && cellInsideExclusion(cur_ray_id_g)) {
+                     last_exclusion_stats_.misses_masked++;
++                    unhit_passes_[getHashIndexFromGlobalIndex(cur_ray_id_g)] = 0;   // reached, not weighed
+                     continue;
+                 }
+                 insertUpdateCandidate(cur_ray_id_g, false);
+@@ -863,6 +884,168 @@
+     }
+ }
+ 
++bool ProbMap::unhitLineOfSightClear(const Vec3f& sensor, const Vec3f& cell_center) {
++    // Every cell from the ray start (raycast_range_min from the sensor, where ordinary rays start
++    // too) up to but excluding the cell itself must not be a virtual plane, the map edge, or an
++    // OCCUPIED cell that has been hit within the last decay period. UNKNOWN does not block: an
++    // unknown cell on the line to a cell that WAS hit is the discretised line grazing a body's
++    // never-scanned interior (a tangent cell of a person is reached by real rays that miss the
++    // interior by less than a cell), or space no ray has ever returned from -- and in the field of
++    // view, within range, "no return" is exactly the evidence this decay acts on. Nor does an
++    // occupied cell that is itself going unhit: if there were matter in it the rays would return
++    // from it, so the layers of a remnant decay together instead of one per window. A real
++    // occluder in view returns hits every scan and blocks.
++    const Vec3f d = cell_center - sensor;
++    const double r = d.norm();
++    if (r <= cfg_.raycast_range_min) {
++        return true;
++    }
++    const Vec3f start = sensor + d * (cfg_.raycast_range_min / r);
++    if (!decay_raycaster_.setInput(start, cell_center)) {
++        return true;
++    }
++    Vec3f pt;
++    Vec3i id_g;
++    while (decay_raycaster_.step(pt)) {
++        posToGlobalIndex(pt, id_g);
++        if (!insideLocalMap(id_g) ||
++            id_g.z() <= sc_.virtual_ground_height_id_g || id_g.z() >= sc_.virtual_ceil_height_id_g) {
++            return false;
++        }
++        const int h = getHashIndexFromGlobalIndex(id_g);
++        if (isOccupied(occupancy_buffer_[h]) && unhit_passes_[h] < 2) {
++            return false;
++        }
++    }
++    return true;
++}
++
++void ProbMap::unhitDecayPass(const Pose& pose) {
++    const auto t0 = std::chrono::steady_clock::now();
++    const Vec3f& sensor = pose.first;
++    const Mat3f R_bw = pose.second.toRotationMatrix().transpose();   // world -> sensor body
++    const double res = cfg_.resolution;
++    const double r_max = cfg_.unhit_decay_range_max;
++    const double r_min = cfg_.raycast_range_min + res;
++    const double sqr_r_max = r_max * r_max, sqr_r_min = r_min * r_min;
++    const double sin_lo = std::sin(cfg_.unhit_decay_elev_min_deg * M_PI / 180.0);
++    const double sin_hi = std::sin(cfg_.unhit_decay_elev_max_deg * M_PI / 180.0);
++    const double period_s = cfg_.unhit_decay_period_frames / cfg_.unhit_decay_scan_rate_hz;
++    // rays per second through a cell of cross-section res^2 at range r: rays_per_sr_s * res^2 / r^2
++    const double rays_area = cfg_.unhit_decay_rays_per_sr_s * res * res;
++
++    Vec3i lo_i, hi_i;
++    posToGlobalIndex(sensor - Vec3f::Constant(r_max), lo_i);
++    posToGlobalIndex(sensor + Vec3f::Constant(r_max), hi_i);
++    lo_i = lo_i.cwiseMax(local_map_bound_min_i_);
++    hi_i = hi_i.cwiseMin(local_map_bound_max_i_);
++    lo_i.z() = std::max(lo_i.z(), sc_.virtual_ground_height_id_g + 1);
++    hi_i.z() = std::min(hi_i.z(), sc_.virtual_ceil_height_id_g - 1);
++    if ((hi_i - lo_i).minCoeff() < 0) {
++        return;
++    }
++
++    // The buffer is hashed (lx + hx) * sy * sz + (ly + hy) * sz + (lz + hz) with the local index
++    // the global one wrapped into [-h, h] (SlidingMap::getLocalIndexHash), so a column is walked
++    // by stepping lz and wrapping once, without hashing every cell.
++    const int sz = sc_.map_size_i.z(), hz = sc_.half_map_size_i.z();
++    const int sy = sc_.map_size_i.y(), hy = sc_.half_map_size_i.y(), hx = sc_.half_map_size_i.x();
++    long candidates = 0, visible = 0, decayed = 0, emptied = 0;
++    Vec3i id_g, id_l;
++    Vec3f c;
++    for (id_g.x() = lo_i.x(); id_g.x() <= hi_i.x(); id_g.x()++) {
++        for (id_g.y() = lo_i.y(); id_g.y() <= hi_i.y(); id_g.y()++) {
++            id_g.z() = lo_i.z();
++            globalIndexToPos(id_g, c);
++            const double cx = c.x() - sensor.x(), cy = c.y() - sensor.y();
++            const double sqr_h = cx * cx + cy * cy;
++            if (sqr_h > sqr_r_max) {
++                continue;
++            }
++            // only the part of the column inside the range_max sphere
++            const double dz_max = std::sqrt(std::max(0.0, sqr_r_max - sqr_h));
++            int z_lo, z_hi;
++            posToGlobalIndex(sensor.z() - dz_max, z_lo);
++            posToGlobalIndex(sensor.z() + dz_max, z_hi);
++            z_lo = std::max(z_lo, lo_i.z());
++            z_hi = std::min(z_hi, hi_i.z());
++            if (z_hi < z_lo) {
++                continue;
++            }
++            id_g.z() = z_lo;
++            globalIndexToLocalIndex(id_g, id_l);
++            const int base = (id_l.x() + hx) * sy * sz + (id_l.y() + hy) * sz + hz;
++            int lz = id_l.z();
++            for (id_g.z() = z_lo; id_g.z() <= z_hi; id_g.z()++, lz = (lz + 1 > hz) ? lz + 1 - sz : lz + 1) {
++                const int h = base + lz;
++                const float v = occupancy_buffer_[h];
++                const bool occ = isOccupied(v);
++                if (!occ) {
++                    if (unhit_passes_[h] == 0) {
++                        continue;                 // free or unknown space is not ours to touch
++                    }
++                    if (isKnownFree(v)) {
++                        unhit_passes_[h] = 0;     // done: ordinary rays or this pass freed it
++                        continue;
++                    }
++                    // unknown, but emptied by this pass and unhit since: keep going until free
++                }
++                const double cz = (id_g.z() + 0.5) * res - sensor.z();
++                const double sqr_r = sqr_h + cz * cz;
++                if (sqr_r > sqr_r_max || sqr_r < sqr_r_min) {
++                    continue;
++                }
++                const Vec3f d(cx, cy, cz);
++                const double r = std::sqrt(sqr_r);
++                const double s = (R_bw * d).z() / r;      // sine of the elevation in the sensor frame
++                if (s < sin_lo || s > sin_hi) {
++                    continue;
++                }
++                candidates++;
++                uint8_t& n = unhit_passes_[h];
++                if (n == 0) {
++                    n = 1;                        // first look since a ray last reached it: start the clock
++                    continue;
++                }
++                if (n < 255) {
++                    n++;
++                }
++                const double t_unhit = (n - 1) * period_s;
++                const double rate = rays_area / sqr_r;
++                if (t_unhit < cfg_.unhit_decay_window_s || rate * t_unhit < cfg_.unhit_decay_min_expected_rays) {
++                    continue;
++                }
++                // Due. The line-of-sight walk runs only now, so a real surface -- hit again long
++                // before its window is up -- never pays for one. Blocked: no misses this pass; the
++                // clock keeps running, and a real object that comes back into view is hit again
++                // before the next pass and resets it.
++                c = sensor + d;
++                if (!unhitLineOfSightClear(sensor, c)) {
++                    continue;
++                }
++                visible++;
++                const int misses = std::max(1, std::min(cfg_.unhit_decay_max_miss_per_pass,
++                                                        (int) std::lround(rate * period_s)));
++                missPointUpdate(c, h, misses);
++                decayed++;
++                if (occ && !isOccupied(occupancy_buffer_[h])) {
++                    emptied++;
++                }
++                if (isKnownFree(occupancy_buffer_[h])) {
++                    n = 0;
++                }
++            }
++        }
++    }
++    unhit_stats_.passes++;
++    unhit_stats_.candidates += candidates;
++    unhit_stats_.visible += visible;
++    unhit_stats_.decayed += decayed;
++    unhit_stats_.emptied += emptied;
++    unhit_stats_.last_pass_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
++    unhit_stats_.max_pass_ms = std::max(unhit_stats_.max_pass_ms, unhit_stats_.last_pass_ms);
++}
++
+ void ProbMap::updateLocalBox(const Vec3f& cur_odom) {
+     /* This function is only used for decide the local update range
+      * and do not related to the map origin and map bound
+@@ -905,4 +1088,5 @@
+     raycast_data_.batch_update_counter = 0;
+     std::fill(raycast_data_.operation_cnt.begin(), raycast_data_.operation_cnt.end(), 0);
+     std::fill(raycast_data_.hit_cnt.begin(), raycast_data_.hit_cnt.end(), 0);
++    std::fill(unhit_passes_.begin(), unhit_passes_.end(), 0);
+ }
+diff --git a/super_planner/config/follow_test_ros2.yaml b/super_planner/config/follow_test_ros2.yaml
+--- a/super_planner/config/follow_test_ros2.yaml
++++ b/super_planner/config/follow_test_ros2.yaml
+@@ -236,6 +236,36 @@
+     # A velocity above this is treated as a bad estimate and the observation is ignored.
+     max_speed: 3.0
+ 
++  # DTP visible-but-unhit decay (2026-09-15, patch 0007; docs/fact-rogmap-unhit-decay.md).
++  # ROG-Map casts rays only to returns. A beam that returns nothing (sky) clears nothing, so a
++  # person seen from the GROUNDED aircraft -- sensor 0.15 m up, all of them above the horizon --
++  # leaves occupied cells no ray ever crosses again: on the 2026-09-14 bags 113 of 457 such
++  # cells were still there 7 min after the walker left. This pass sweeps occupied cells within
++  # range_max, and one that is inside the sensor's vertical field of view, has no observed
++  # occupied cell in the way, and that NO ray has reached for window_s (hit or miss -- a ray
++  # that does cross it is evidence ROG-Map already weighs) -- and long enough that the sensor
++  # would have sent min_expected_rays through it -- receives, every period_s, as many misses
++  # as rays it should have seen (rays_per_sr_s * 0.1^2 / r^2 * period_s). A real surface in
++  # view keeps returning hits and is never touched; neither is anything occluded, out of view
++  # or beyond range_max. Gate: drone-dtp/scripts/unhit_decay_check.py: a walker's cells 3.1 m
++  # away with sky behind are gone 7 s after they leave; pass cost 3-4 ms, max 10 ms.
++  unhit_decay:
++    enable: true
++    range_max: 8.0
++    # MID360: -7 .. +52 deg, 1 deg inside so a cell on the edge of the pattern is not judged.
++    fov_elev_min_deg: -6.0
++    fov_elev_max_deg: 50.0
++    window_s: 3.0
++    period_s: 0.5
++    scan_rate_hz: 10.0
++    # Rays reaching ROG-Map per steradian per second: the MID360's ~200k pts/s over its 5.72 sr
++    # field of view, / FAST-LIO's point_filter_num 3 = 11.7k; 10k is deliberately a little low.
++    # Must include every downsampling between the sensor and this map (point_filt_num above too).
++    rays_per_sr_s: 10000.0
++    # At 3 m a cell sees ~11 rays/s (window 3 s); at 6 m 2.8/s (7 s); at 8 m 1.6/s (13 s).
++    min_expected_rays: 20.0
++    max_miss_per_pass: 50
++
+ # M6.1 (DTP) loss oracle (docs/m5-m6-plan.md SS5.0; drone-dtp/docs: docs/m6-loss-oracle.md).
+ # Answers every COASTING /dtp/follow_target with a dtp_msgs/LossEvent on /planning/loss_event:
+ # OCCLUDED / UNMAPPED / LOST / OUT_OF_VIEW, plus the reappearance belief and a pre-positioning

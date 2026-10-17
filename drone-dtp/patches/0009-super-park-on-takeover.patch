@@ -1,0 +1,208 @@
+diff --git a/super_planner/config/follow_test_ros2.yaml b/super_planner/config/follow_test_ros2.yaml
+--- a/super_planner/config/follow_test_ros2.yaml
++++ b/super_planner/config/follow_test_ros2.yaml
+@@ -7,6 +7,9 @@
+   follow_goal_topic: "/planning/follow_goal"
+   goal_status_topic: "/planning/goal_status"
+   yaw_target_topic: "/planning/yaw_target"
++  # PARK (patch 0009): a std_msgs/Empty here drops the goal and idles SUPER until the next goal.
++  # command_mux sends it when PX4 leaves Offboard or disarms.
++  park_topic: "/planning/park"
+   click_goal_topic: "/goal_pose"
+   click_height: 1.5
+   click_yaw_en: true
+diff --git a/super_planner/include/fsm/config.hpp b/super_planner/include/fsm/config.hpp
+--- a/super_planner/include/fsm/config.hpp
++++ b/super_planner/include/fsm/config.hpp
+@@ -53,7 +53,7 @@
+         // M0.7 Step 0.7.4 (DTP). Dedicated moving-goal ingestion + YAW_TO_TARGET, ROS2 only.
+         // Default OFF so upstream/simulation configs behave exactly as before.
+         bool follow_goal_en{false};
+-        string follow_goal_topic, goal_status_topic, yaw_target_topic;
++        string follow_goal_topic, goal_status_topic, yaw_target_topic, park_topic;
+ 
+         // M6.1 (DTP). The loss oracle: classifies WHY the followed person was lost against
+         // ROG-Map and publishes dtp_msgs/LossEvent. Default OFF. Parameters are the paper's
+@@ -97,6 +97,8 @@
+             loader.LoadParam("fsm/follow_goal_topic", follow_goal_topic, string("/planning/follow_goal"));
+             loader.LoadParam("fsm/goal_status_topic", goal_status_topic, string("/planning/goal_status"));
+             loader.LoadParam("fsm/yaw_target_topic", yaw_target_topic, string("/planning/yaw_target"));
++            // PARK (patch 0009): std_msgs/Empty; drop the goal and idle. Subscribed with follow_goal_en.
++            loader.LoadParam("fsm/park_topic", park_topic, string("/planning/park"));
+ 
+             // M6.1 -- loss oracle (ROS2 only; ignored by the ROS1 build).
+             loader.LoadParam("loss_oracle/enable", loss_oracle_en, false);
+diff --git a/super_planner/include/fsm/fsm.h b/super_planner/include/fsm/fsm.h
+--- a/super_planner/include/fsm/fsm.h
++++ b/super_planner/include/fsm/fsm.h
+@@ -26,6 +26,8 @@
+ 
+ #include <queue>
+ #include <memory>
++#include <atomic>
++#include <mutex>
+ #include <fstream>
+ #include <fmt/color.h>
+ #include <cereal/archives/binary_file_handler.hpp>
+@@ -120,6 +122,16 @@
+         // out_goal_p returns the goal SUPER actually adopted.
+         GoalIngestStatus setFollowGoal(const Vec3f &p, const double &yaw, Vec3f &out_goal_p);
+ 
++        // PARK (patch 0009, 2026-09-30) -- drop the goal and idle in WAIT_GOAL until the next one.
++        // The FSM has no "stop planning" of its own: a trajectory that ends more than 0.1 m from
++        // the goal sends it to GENERATE_TRAJ, which calls PlanFromRest every 10 ms tick until one
++        // succeeds or the aircraft reaches the goal. After a pilot takeover neither happens: on
++        // 2026-09-30 it re-planned to a stale goal for 45 minutes (76,229 failed plans, fsm_node
++        // at 144 % of a core). command_mux calls this when PX4 stops flying our setpoints.
++        // Parked is the same state as an arrival: WAIT_GOAL, pos_cmd silent, and the next goal is
++        // planned from rest at the aircraft. Any accepted goal un-parks.
++        void parkFollow();
++
+         // Forward the followed target to the planner for YAW_TO_TARGET (super_planner/yaw_mode == 3).
+         void setYawTarget(const Vec3f &target_p, const double &stamp_WT) {
+             planner_ptr_->setYawTarget(target_p, stamp_WT);
+@@ -170,6 +182,10 @@
+         vector<LogOneReplan> replan_logs_;
+         /* Callback functions */
+         bool finish_plan = false;
++        // PARK (patch 0009): set by parkFollow(), cleared by the next accepted goal. Read without
++        // the lock by the timers; park_mtx_ makes "park" and "new goal" atomic against each other.
++        std::atomic<bool> parked_{false};
++        std::mutex park_mtx_;
+         double system_start_time_;
+ 
+         bool traj_finish_{false};
+diff --git a/super_planner/include/ros_interface/ros2/fsm_ros2.hpp b/super_planner/include/ros_interface/ros2/fsm_ros2.hpp
+--- a/super_planner/include/ros_interface/ros2/fsm_ros2.hpp
++++ b/super_planner/include/ros_interface/ros2/fsm_ros2.hpp
+@@ -35,6 +35,7 @@
+ #include <ros_interface/ros2/ros2_interface.hpp>
+ #include "geometry_msgs/msg/pose_stamped.hpp"
+ #include "geometry_msgs/msg/point_stamped.hpp"
++#include "std_msgs/msg/empty.hpp"
+ #include "dtp_msgs/msg/goal_status.hpp"
+ #include "dtp_msgs/msg/target.hpp"
+ #include "dtp_msgs/msg/loss_event.hpp"
+@@ -57,6 +58,8 @@
+         rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr follow_goal_sub_;
+         rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr yaw_target_sub_;
+         rclcpp::Publisher<dtp_msgs::msg::GoalStatus>::SharedPtr goal_status_pub_;
++        // PARK (patch 0009): command_mux's "PX4 stopped flying our setpoints" -> Fsm::parkFollow()
++        rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr park_sub_;
+         // M5.3a (DTP) target-point filter input; created only when rog_map/target_exclusion/enable
+         rclcpp::Subscription<dtp_msgs::msg::Target>::SharedPtr target_exclusion_sub_;
+         rclcpp::CallbackGroup::SharedPtr target_exclusion_cbk_group_;
+@@ -589,8 +592,12 @@
+                 yaw_target_sub_ = nh_->create_subscription<geometry_msgs::msg::PointStamped>(
+                         cfg_.yaw_target_topic, qos,
+                         std::bind(&FsmRos2::yawTargetCallback, this, std::placeholders::_1));
++                park_sub_ = nh_->create_subscription<std_msgs::msg::Empty>(
++                        cfg_.park_topic, qos,
++                        [this](const std_msgs::msg::Empty::SharedPtr) { parkFollow(); });
+                 cout << YELLOW << " -- [Fsm] FOLLOW GOAL ENABLE (" << cfg_.follow_goal_topic
+-                     << "), status on " << cfg_.goal_status_topic << RESET << endl;
++                     << "), status on " << cfg_.goal_status_topic
++                     << ", park on " << cfg_.park_topic << RESET << endl;
+                 cmd_cnt++;
+             }
+ 
+@@ -722,6 +729,10 @@
+             if (machine_state_ != FOLLOW_TRAJ && machine_state_ != EMER_STOP) {
+                 return;
+             }
++            if (parked_) {
++                // PARK (patch 0009): no command for a goal that was dropped.
++                return;
++            }
+ 
+ 
+             mars_quadrotor_msgs::msg::PolynomialTrajectory heartbeat;
+diff --git a/super_planner/src/super_core/fsm.cpp b/super_planner/src/super_core/fsm.cpp
+--- a/super_planner/src/super_core/fsm.cpp
++++ b/super_planner/src/super_core/fsm.cpp
+@@ -48,6 +48,10 @@
+             return;
+         }
+ 
++        if (parked_) {
++            return;
++        }
++
+         if (machine_state_ != FOLLOW_TRAJ) {
+             return;
+         }
+@@ -70,6 +74,11 @@
+ //            cout << YELLOW << " -- [Fsm] ReplanOnce failed." << RESET << endl;
+         } else { cout << GREEN << " -- [Fsm] ReplanOnce succeed." << RESET << endl; }
+ 
++        if (parked_) {
++            // Parked while this replan ran: its result is for a goal that no longer exists.
++            return;
++        }
++
+         if (ret_code == EMER) {
+             ChangeState("ReplanTimerCallback", EMER_STOP);
+         } else if (ret_code == NEW_TRAJ) {
+@@ -94,6 +103,19 @@
+         double cur_t = (ros_ptr_->getSimTime() - fsm_start_time);
+         static double last_print_t = 0.0;
+         planner_ptr_->getRobotState(robot_state_);
++        if (parked_) {
++            // PARK (patch 0009). Checked every tick, so a state change that raced the park from
++            // the command timer is undone within 10 ms.
++            std::lock_guard<std::mutex> guard(park_mtx_);
++            if (parked_) {
++                gi_.new_goal = false;
++                finish_plan = true;
++                if (machine_state_ != INIT && machine_state_ != WAIT_GOAL) {
++                    ChangeState("parkFollow", WAIT_GOAL);
++                }
++                return;
++            }
++        }
+ 
+ 
+         if (cur_t - last_print_t > 1.0) {
+@@ -219,8 +241,21 @@
+                  << RESET << endl;
+         }
+ 
+-        started_ = true;
+-        gi_.new_goal = true;
++        {
++            std::lock_guard<std::mutex> guard(park_mtx_);
++            started_ = true;
++            gi_.new_goal = true;
++            parked_ = false;
++        }
++    }
++
++    void Fsm::parkFollow() {
++        std::lock_guard<std::mutex> guard(park_mtx_);
++        if (!parked_) {
++            ros_ptr_->warn(" -- [Fsm] PARKED in state {}: goal dropped, pos_cmd silent until the next goal.",
++                           MACHINE_STATE_STR[int(machine_state_)].c_str());
++        }
++        parked_ = true;
+     }
+ 
+     Fsm::GoalIngestStatus Fsm::setFollowGoal(const Vec3f &p, const double &yaw, Vec3f &out_goal_p) {
+@@ -235,10 +270,14 @@
+ 
+         const bool snapped_away = (snapped - p).norm() > 1e-6;
+ 
+-        gi_.goal_p = snapped;
+-        gi_.goal_yaw = yaw;
+-        gi_.new_goal = true;
+-        started_ = true;
++        {
++            std::lock_guard<std::mutex> guard(park_mtx_);
++            gi_.goal_p = snapped;
++            gi_.goal_yaw = yaw;
++            gi_.new_goal = true;
++            started_ = true;
++            parked_ = false;
++        }
+         out_goal_p = gi_.goal_p;
+ 
+         return snapped_away ? GOAL_SNAPPED : GOAL_ACCEPTED;

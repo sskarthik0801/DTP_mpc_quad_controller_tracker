@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  FastDDS profile for FAST-LIO (M5.3, 2026-09-13): UDP sends that never block.
+
+  rmw_fastrtps publishes synchronously, so publish() runs the UDP sendto inside the calling
+  thread: for /cloud_registered that is FAST-LIO's scan callback. A Wi-Fi subscriber to that
+  1 MB/scan topic (a laptop RViz) turns any air stall into a blocked callback -- measured with
+  strace delay injection: 20 ms per sendto took /lidar_slam/odom from 10 Hz to 1.9 Hz with
+  1.1 s gaps while FAST-LIO's CPU fell to 13 %, the signature of the 2026-09-13 soak's O2
+  failure. non_blocking_send makes a full socket buffer drop the datagram instead ("as if sent
+  and lost", FastDDS UDPTransportDescriptor.h): the Wi-Fi viewer loses frames, the estimator
+  never waits. Local delivery (fsm_node, the bridges) is SHM and unaffected.
+
+  Loaded per process through FASTRTPS_DEFAULT_PROFILES_FILE (m1_super_lidar.launch.py,
+  fastlio_dds_profile). Check it took: every UDP socket of fastlio_mapping shows O_NONBLOCK
+  (flags 04002) in /proc/<pid>/fdinfo/<fd>.
+-->
+<dds xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <profiles>
+    <transport_descriptors>
+      <transport_descriptor>
+        <transport_id>udp_nonblocking</transport_id>
+        <type>UDPv4</type>
+        <non_blocking_send>true</non_blocking_send>
+      </transport_descriptor>
+      <transport_descriptor>
+        <transport_id>shm_default</transport_id>
+        <type>SHM</type>
+      </transport_descriptor>
+    </transport_descriptors>
+    <participant profile_name="fastlio_nonblocking" is_default_profile="true">
+      <rtps>
+        <userTransports>
+          <transport_id>udp_nonblocking</transport_id>
+          <transport_id>shm_default</transport_id>
+        </userTransports>
+        <useBuiltinTransports>false</useBuiltinTransports>
+      </rtps>
+    </participant>
+  </profiles>
+</dds>

@@ -1,0 +1,46 @@
+ROG-Map: clip a ray to the virtual ceil/ground plane where it CROSSES the plane (2026-09-13).
+
+Upstream bug (SUPER 2ad3419, ProbMap::raycastProcess). A return above virtual_ceil_height or
+below virtual_ground_height is meant to be shortened to the point where its ray crosses that
+plane, then raycast as a miss-only ray. The code scaled the UNIT vector by the ratio pc/dz:
+
+    p = cur_odom + (p - cur_odom).normalized() * pc / dz;     // |p - cur_odom| = pc/dz <= 1 m
+
+pc/dz is dimensionless (0..1], so the "clipped" endpoint landed within 1 m of the sensor and the
+ray cleared nothing past that. Every cell a ray to the floor (or to anything above the ceiling)
+should have freed stayed as it was. The fix keeps the ray's own length:
+
+    p = cur_odom + (p - cur_odom) * (pc / dz);
+
+WHEN IT BITES: the floor is below virtual_ground_height (-1.0 in lidar_init), i.e. FAST-LIO
+started with the sensor > 1 m above the floor (bench / table), or terrain drops away; and
+anything above virtual_ceil_height (3.5 m) while flying high enough that the raycast box top
+(odom z + 2.5 m) is above it. A person who walked away then leaves the cells of their lower body
+occupied forever -- no ray through them survives the clip.
+
+MEASURED (real fsm_node, synthetic scene, MID360 ray directions from run5, floor at -1.35, person
+at 4 m stands 10 s then leaves): person-volume cells still occupied 39 s later, stock 27 (all below
+-3 deg elevation, none ever cleared) vs fixed 0. target_filter_check.py 17/17 on the fixed build.
+
+Applies after 0002 (and to 2ad3419 + isnan alone: its context is upstream's).
+
+diff --git a/rog_map/src/rog_map/prob_map.cpp b/rog_map/src/rog_map/prob_map.cpp
+--- a/rog_map/src/rog_map/prob_map.cpp
++++ b/rog_map/src/rog_map/prob_map.cpp
+@@ -774,14 +774,14 @@
+             // find the intersect point with the ceil
+             const double dz = p.z() - cur_odom.z();
+             const double pc = cfg_.virtual_ceil_height - cur_odom.z();
+-            p = cur_odom + (p - cur_odom).normalized() * pc / dz;
++            p = cur_odom + (p - cur_odom) * (pc / dz);
+         }
+         else if (p.z() < cfg_.virtual_ground_height) {
+             update_hit = false;
+             // find the intersect point with the ground
+             const double dz = p.z() - cur_odom.z();
+             const double pc = cfg_.virtual_ground_height - cur_odom.z();
+-            p = cur_odom + (p - cur_odom).normalized() * pc / dz;
++            p = cur_odom + (p - cur_odom) * (pc / dz);
+         }
+ 
+         // 1.4) bounding box filter

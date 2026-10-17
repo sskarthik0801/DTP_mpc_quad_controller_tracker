@@ -1,0 +1,19 @@
+estimator preflight: listening 20 s -- keep the aircraft still, on the ground, where it will take off
+
+ESTIMATOR PREFLIGHT (G0.2)
+  [ ok ] E1 single publisher /livox/lidar            livox_lidar_publisher
+  [ ok ] E1 single publisher /livox/imu              livox_lidar_publisher
+  [ ok ] E1 single publisher /lidar_slam/odom        laser_mapping
+  [ ok ] E1 one livox_ros_driver2_node process       pid 46385
+  [ ok ] E1 one fastlio_mapping process              pid 46445
+  [ ok ] E2 FAST-LIO started after the Livox driver  4.0 s after
+  [ ok ] E3 odometry rate                            worst 10 s window 9.9 Hz
+  [ ok ] E3 odometry stamp gaps                      max 0.10 s
+  [ ok ] E4 odometry age                             p95 68 ms
+  [FAIL] E5 odometry near lidar_init origin          max |p| 2642.0 m, now (1072.3, 939.1, -2224.5) > 1.0 m. Either the aircraft was carried after FAST-LIO started, or FAST-LIO has diverged. Either way: restart FAST-LIO HERE.
+  [ ok ] E6 EKF2 position valid                      998 samples, all valid
+  [FAIL] E6 |EKF2 - FRD(odom)|                       max 2641.97 m > 0.2 m -- EKF2 is not following the LiDAR estimate (bridge down, or fusing something else)
+  [WARN] E7 no EKF2 resets                           none, but only 20 s observed (plan asks 60 s)
+  [FAIL] E8 odom bridge guard                        DIVERGED reset_counter=0 reason=no scan-matched pose for 59.5 s (stamp gap > max_gap_s 1.0): FAST-LIO integrated IMU alone across it
+
+NO-GO: 3 failing check(s). Do not arm.

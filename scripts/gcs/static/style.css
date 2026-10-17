@@ -1,0 +1,443 @@
+/* The portfolio's theme (github.com/kleverin/Portfolio): green-black ground,
+   one mint accent, pill buttons, Inter + Plus Jakarta Sans. Dark and
+   high-contrast either way: this gets read outdoors, on a laptop in the sun or
+   a phone at the edge of a field.
+   The fonts are served from this directory, not Google -- there is no
+   internet at the flying field. Every face has a system fallback, so a
+   missing .woff2 costs the look and nothing else. */
+@font-face{
+  font-family:'Inter'; font-style:normal; font-weight:100 900;
+  font-display:swap; src:url(inter.woff2) format('woff2');
+}
+@font-face{
+  font-family:'Plus Jakarta Sans'; font-style:normal; font-weight:200 800;
+  font-display:swap; src:url(jakarta.woff2) format('woff2');
+}
+
+:root{
+  --bg:#070b0a; --card:#0c1211; --card2:#111917;
+  --line:#1a2220; --line-strong:#27312f;
+  --fg:#f4f7f6; --dim:#9ba5a2; --faint:#68726f;
+  --accent:#5ed29c; --accent-hi:#8ee7bf;
+  /* Status colours are NOT the accent's job. Green/amber/red/blue mean
+     ok/warn/bad/in-progress everywhere on this page, and a theme that folded
+     them into one brand colour would erase the difference between them. */
+  --ok:#5ed29c; --warn:#e3a93b; --bad:#f26464; --idle:#6cb6ff;
+  --font-sans:'Inter',system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --font-display:'Plus Jakarta Sans','Inter',system-ui,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box; scrollbar-color:var(--line-strong) transparent}
+body{
+  margin:0; color:var(--fg);
+  /* The portfolio hero's glow, once, at the top of the page. */
+  background:
+    radial-gradient(1100px 420px at 50% -140px,
+      rgba(31,181,143,.16), rgba(94,210,156,.05) 45%, transparent 72%) no-repeat,
+    var(--bg);
+  font:15px/1.5 var(--font-sans);
+  -webkit-font-smoothing:antialiased;
+  -webkit-text-size-adjust:100%;
+  cursor:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Ccircle cx='10' cy='10' r='7' fill='%235ed29c'/%3E%3C/svg%3E") 10 10, auto;
+}
+a, button, .tab{
+  cursor:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 48 48'%3E%3Cdefs%3E%3CradialGradient id='g' cx='50%25' cy='50%25' r='50%25'%3E%3Cstop offset='0%25' stop-color='%23daffe9' stop-opacity='1'/%3E%3Cstop offset='30%25' stop-color='%235ed29c' stop-opacity='0.95'/%3E%3Cstop offset='60%25' stop-color='%235ed29c' stop-opacity='0.45'/%3E%3Cstop offset='100%25' stop-color='%235ed29c' stop-opacity='0'/%3E%3C/radialGradient%3E%3C/defs%3E%3Ccircle cx='24' cy='24' r='23' fill='url(%23g)'/%3E%3Ccircle cx='24' cy='24' r='7' fill='%23eafff4'/%3E%3C/svg%3E") 24 24, pointer;
+}
+/* The dot cursor is inherited, so give back the I-beam where you type or
+   select -- the log is copied from as often as it is read. */
+input[type=text],input[type=password],input[type=number],pre,code{cursor:text}
+a{color:var(--accent); text-decoration:none}
+a:hover{color:var(--accent-hi)}
+::selection{background:var(--accent); color:var(--bg)}
+
+header{
+  position:sticky; top:0; z-index:20;
+  display:flex; align-items:center; justify-content:space-between; gap:12px;
+  padding:12px clamp(16px,4vw,40px); background:rgba(7,11,10,.82);
+  backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--line);
+}
+.brand{display:flex; align-items:center; gap:11px; min-width:0}
+.brand b{font-weight:800; font-size:17px; letter-spacing:.04em; white-space:nowrap}
+.host{color:var(--dim); font:12px/1 var(--mono); overflow:hidden;
+      text-overflow:ellipsis; white-space:nowrap}
+/* The link indicator is the portfolio's diamond logo mark: grey while
+   connecting, glowing mint while the Jetson answers, red when it stops. */
+.dot{width:10px; height:10px; border-radius:2px; transform:rotate(45deg);
+     background:var(--faint); flex:none; transition:background .2s, box-shadow .2s}
+.dot.on{background:var(--accent); box-shadow:0 0 10px rgba(94,210,156,.7)}
+.dot.off{background:var(--bad); box-shadow:0 0 10px rgba(242,100,100,.6)}
+
+button{
+  font:700 12.5px/1.2 var(--font-sans); letter-spacing:.06em; text-transform:uppercase;
+  color:var(--bg); background:var(--accent);
+  border:1px solid transparent; border-radius:999px; padding:9px 18px;
+  transition:background .15s ease, color .15s ease, border-color .15s ease,
+             transform .15s ease, opacity .15s ease;
+}
+button:hover:not(:disabled){background:var(--accent-hi); transform:translateY(-1px)}
+button:disabled{opacity:.35; cursor:not-allowed}
+button.ghost{background:transparent; color:var(--fg); border-color:rgba(255,255,255,.2);
+             font-weight:600}
+button.ghost:hover:not(:disabled){background:transparent; border-color:rgba(94,210,156,.6);
+                                  color:var(--accent)}
+button.danger{background:var(--bad); color:#fff}
+button.danger:hover:not(:disabled){background:#ff7d7d}
+button.small{padding:6px 13px; font-size:11px}
+/* Neither a normal action nor a STOP: the two buttons that change something on
+   the aircraft. Amber so they cannot be pressed on muscle memory, outlined so
+   they do not compete with STOP ALL. */
+button.caution{background:transparent; color:#ffd694; border-color:#7a5418}
+button.caution:hover:not(:disabled){background:#3d2a12; color:#ffd694}
+
+.banner{
+  margin:12px clamp(16px,4vw,40px) 0; padding:11px 15px; border-radius:12px;
+  font-size:14px; background:#2a1e0e; border:1px solid #7a5418; color:#ffd694;
+}
+.banner.err{background:#2e1214; border-color:#7a2226; color:#ffb4b4}
+.banner.ok{background:rgba(94,210,156,.07); border-color:rgba(94,210,156,.3);
+           color:var(--accent-hi)}
+.banner.warn{background:#2a1e0e; border-color:#7a5418; color:#ffd694}
+
+main{
+  display:grid; gap:16px; padding:16px clamp(16px,4vw,40px) 8px;
+  grid-template-columns:repeat(4,1fr); max-width:1400px; margin:0 auto;
+}
+.card{
+  background:linear-gradient(180deg, rgba(255,255,255,.028), rgba(255,255,255,.012)),
+             var(--card);
+  border:1px solid var(--line-strong); border-radius:16px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.04);
+  padding:16px 18px; min-width:0;
+}
+.span2{grid-column:span 2} .span4{grid-column:span 4}
+@media(max-width:900px){
+  main{grid-template-columns:repeat(2,1fr)}
+  .span2,.span4{grid-column:span 2}
+}
+@media(max-width:560px){
+  main{grid-template-columns:1fr; gap:12px}
+  .span2,.span4{grid-column:span 1}
+  .card{padding:14px 15px}
+  /* Inter 800 is wider than the old monospace: at 32px a mode name like
+     AUTO_LOITER breaks mid-word beside the badges on a phone. `main` for
+     specificity: the base .big rule comes later in this file. */
+  main .big{font-size:26px}
+  /* STOP ALL must stay on the header row, one line, never pushed under. */
+  header{padding:10px 14px; gap:8px}
+  header .row{flex-wrap:nowrap; gap:6px}
+  header button{white-space:nowrap; padding:7px 12px; font-size:11px; letter-spacing:.04em}
+  .brand b{font-size:15px}
+}
+/* Card titles are the portfolio's eyebrow labels: small, tracked, mint. */
+h2{margin:0 0 12px; font:700 11.5px/1.3 var(--font-display); letter-spacing:.2em;
+   text-transform:uppercase; color:var(--accent)}
+h3{margin:18px 0 9px; font:700 10.5px/1.3 var(--font-display); letter-spacing:.2em;
+   text-transform:uppercase; color:rgba(255,255,255,.45)}
+.hint{font:400 12.5px/1.3 var(--font-sans); letter-spacing:0; text-transform:none;
+      color:var(--faint); margin-left:4px}
+
+.hero{display:flex; align-items:flex-start; justify-content:space-between; gap:12px}
+/* The readout keeps its width and the badges wrap into what is left. Shrinking
+   both in proportion -- flexbox's default -- broke AUTO_LOITER mid-word on a
+   phone while the badge column sat half empty. */
+.hero-main{flex:0 0 auto; max-width:100%; min-width:0}
+.big{font:800 32px/1.08 var(--font-sans); letter-spacing:-.025em;
+     font-variant-numeric:tabular-nums; word-break:break-word}
+.big.small{font-size:22px}
+.sub{color:var(--dim); font-size:13px; margin-top:4px}
+
+.badges{display:flex; flex-wrap:wrap; gap:6px; justify-content:flex-end}
+.pill{
+  display:inline-block; padding:4px 11px; border-radius:999px;
+  font:600 12px/1.35 var(--font-sans); letter-spacing:.01em;
+  background:rgba(255,255,255,.02); border:1px solid var(--line-strong);
+  color:var(--dim); white-space:nowrap;
+}
+.pill.ok{color:var(--accent-hi); border-color:rgba(94,210,156,.35); background:rgba(94,210,156,.08)}
+.pill.bad{color:#ffb4b4; border-color:#7a2226; background:#2e1214}
+.pill.warn{color:#ffd694; border-color:#7a5418; background:#2a1e0e}
+.pill.info{color:#b3d9ff; border-color:#1f4b7a; background:#0e2135}
+.pill.muted{color:var(--faint)}
+
+.kv{display:grid; grid-template-columns:auto 1fr; gap:4px 12px; margin:12px 0 0}
+.kv dt{color:var(--dim); font-size:13px}
+.kv dd{margin:0; font:13px/1.5 var(--mono); text-align:right}
+.kv dd.bad{color:var(--bad)} .kv dd.ok{color:var(--ok)} .kv dd.warn{color:var(--warn)}
+
+.meter{width:104px; height:9px; border-radius:999px; background:var(--card2);
+       border:1px solid var(--line-strong); overflow:hidden; flex:none; margin-top:10px}
+.meter-fill{height:100%; width:0; background:var(--ok); transition:width .4s, background .4s}
+
+.procs{display:flex; flex-direction:column; gap:8px}
+.proc{
+  display:flex; align-items:center; gap:11px; padding:10px 13px;
+  background:var(--card2); border:1px solid var(--line); border-radius:12px;
+  flex-wrap:wrap; transition:border-color .15s ease;
+}
+.proc:hover{border-color:var(--line-strong)}
+.proc .name{font-weight:600; flex:1 1 190px; min-width:0}
+.proc .name small{display:block; font-weight:400; color:var(--faint); font-size:12px}
+.proc .stats{font:12px/1.4 var(--mono); color:var(--dim); text-align:right;
+             flex:0 0 auto; min-width:118px}
+.proc .acts{display:flex; gap:6px; flex:none}
+/* The choice-before-Start line (Stack config, follower mode), always on its
+   own full-width line so the reason a Start is refused is readable on a phone. */
+.proc .extra{flex:1 1 100%; display:flex; flex-wrap:wrap; gap:6px; align-items:center;
+             min-width:0}
+.proc .extra .note{margin:0; flex:1 1 220px; min-width:0}
+.proc .extra .note.why{color:var(--warn)}
+
+.chips{display:flex; flex-wrap:wrap; gap:6px}
+.chip{
+  display:inline-flex; align-items:center; gap:7px; padding:5px 11px;
+  border-radius:9px; background:var(--card2); border:1px solid var(--line);
+  font:12px/1.3 var(--mono); color:var(--dim);
+}
+.chip b{color:var(--fg); font-weight:600}
+.chip.ok{border-color:rgba(94,210,156,.3)} .chip.ok b{color:var(--ok)}
+.chip.warn{border-color:#7a5418} .chip.warn b{color:var(--warn)}
+.chip.bad{border-color:#7a2226} .chip.bad b{color:var(--bad)}
+/* A chip that is a button is still a chip: topic and script names keep their
+   case, which the base button's uppercase would destroy. */
+button.chip{color:var(--fg); font:500 13px/1.3 var(--font-sans); letter-spacing:0;
+            text-transform:none; border-radius:9px}
+button.chip:hover:not(:disabled){background:#17211e; border-color:rgba(94,210,156,.4);
+                                 transform:none}
+/* The one check that changes something on the aircraft. */
+button.chip.warn{color:#ffd694; border-color:#7a5418}
+button.chip.warn:hover:not(:disabled){background:#3d2a12}
+
+.gate{margin:14px clamp(16px,4vw,40px) 0; border-color:#7a5418;
+      background:linear-gradient(180deg, rgba(227,169,59,.07), rgba(227,169,59,.02)), var(--card)}
+.gate h2{color:#ffd694}
+.gate code{display:inline; flex:none; white-space:normal}
+input[type=text],input[type=password]{
+  font:13px/1.5 var(--mono); color:var(--fg); background:#0a100f;
+  border:1px solid var(--line-strong); border-radius:10px; padding:8px 11px;
+  flex:1; min-width:0; transition:border-color .15s, box-shadow .15s;
+}
+input[type=text]:focus,input[type=password]:focus{
+  outline:none; border-color:var(--accent); box-shadow:0 0 0 3px rgba(94,210,156,.15);
+}
+/* Unlocked: the header button becomes the way to lock it again, and must not
+   look like an invitation to press it by accident. */
+button#admin-btn.on{background:rgba(94,210,156,.1); border-color:rgba(94,210,156,.45);
+                    color:var(--accent-hi)}
+
+.row{display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+.note{color:var(--faint); font-size:12.5px; line-height:1.55; margin:10px 0 0}
+.cmdrow{display:flex; align-items:center; gap:8px; margin-top:10px}
+code{font:12px/1.5 var(--mono); color:var(--accent); background:rgba(94,210,156,.07);
+     border:1px solid rgba(94,210,156,.14);
+     border-radius:6px; padding:3px 7px; overflow-x:auto; white-space:nowrap;
+     flex:1; min-width:0}
+
+.tabs{display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px}
+.tab{
+  padding:5px 13px; border-radius:999px; font-size:13px;
+  background:transparent; border:1px solid var(--line-strong); color:var(--dim);
+  transition:border-color .15s, color .15s;
+}
+.tab:hover{border-color:rgba(94,210,156,.45); color:var(--fg)}
+.tab.sel{background:rgba(94,210,156,.12); border-color:rgba(94,210,156,.45); color:var(--fg)}
+pre#log{
+  margin:0; padding:12px 14px; height:270px; overflow:auto; border-radius:12px;
+  background:#050807; border:1px solid var(--line);
+  font:12px/1.55 var(--mono); color:#c7d3cf; white-space:pre-wrap;
+  word-break:break-word;
+}
+footer{color:var(--faint); font-size:12.5px; line-height:1.6; text-align:center;
+       margin-top:18px; padding:26px clamp(16px,4vw,40px) 30px;
+       border-top:1px solid var(--line);
+       background:linear-gradient(0deg, rgba(94,210,156,.05), transparent)}
+footer .by{
+  margin-top:14px; padding-top:14px; border-top:1px solid var(--line);
+  display:flex; align-items:center; justify-content:center; gap:9px;
+  color:var(--fg); font-weight:800; font-size:13px; letter-spacing:.06em;
+  text-transform:uppercase;
+}
+footer .by::before{content:""; width:8px; height:8px; border-radius:2px;
+                   background:var(--accent); transform:rotate(45deg)}
+/* The bookmark links: same shape as the RViz paste-the-command row. */
+.urlrow{display:flex; align-items:center; gap:8px; margin-top:8px}
+.urlrow .why{color:var(--faint); font-size:11.5px; white-space:nowrap; flex:none}
+footer code{display:inline; background:none; border:none; padding:0; color:var(--dim)}
+
+/* The camera source you are watching. Marked like a selected tab rather than
+   disabled: greying out is this page's "you cannot have this", and the source
+   already on screen is the opposite of that. */
+button.chip.sel{background:rgba(94,210,156,.12); border-color:rgba(94,210,156,.5);
+                color:var(--fg)}
+
+/* The camera feed. An <img> pointed at an MJPEG stream -- no player, no
+   websocket, no build step, which is the only kind of video this dashboard
+   could have had. Fixed aspect box so the card does not jump between the
+   placeholder and the first frame arriving. */
+.feed{margin-top:12px}
+.feed img{
+  display:block; width:100%; border-radius:12px; background:#050807;
+  border:1px solid var(--line-strong); aspect-ratio:4/3; object-fit:contain;
+}
+.feed-meta{margin-top:6px; font:12px/1.4 var(--mono); color:var(--faint);
+           overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+
+/* --- Recording ---------------------------------------------------------- */
+/* The topic picker can be a hundred chips on this aircraft (65 /fmu/* alone),
+   so it scrolls rather than pushing the rest of the page off the screen. */
+#bag-topics{max-height:230px; overflow-y:auto; padding-right:4px}
+#bag-label{flex:0 1 240px}
+#bag-filter{flex:0 1 220px}
+/* A selected topic is marked the same way a watched camera source is -- this
+   page uses grey for "unavailable", never for "chosen". */
+button.chip.pick{background:rgba(94,210,156,.12); border-color:rgba(94,210,156,.5);
+                 color:var(--fg)}
+/* Heavy topics are the ones that turn a five-minute bag into gigabytes. Amber
+   is a warning, not a refusal: you may well want the point cloud. */
+button.chip.heavy{border-color:#7a5418}
+button.chip.heavy.pick{background:#3d2a12; border-color:#a9782a}
+.chip .ty{color:var(--faint)}
+
+.baglist{display:flex; flex-direction:column; gap:6px; max-height:230px;
+         overflow-y:auto}
+.bagrow{
+  display:flex; align-items:center; gap:11px; padding:7px 12px;
+  background:var(--card2); border:1px solid var(--line); border-radius:10px;
+  font:12px/1.4 var(--mono); flex-wrap:wrap;
+}
+.bagrow .n{flex:1 1 200px; min-width:0; color:var(--fg); overflow:hidden;
+           text-overflow:ellipsis; white-space:nowrap}
+.bagrow .m{color:var(--dim); flex:none}
+/* Missing metadata.yaml: every message is on disk and `ros2 bag play` cannot
+   read a single one of them. That is not a detail. */
+.bagrow.broken{border-color:#7a2226}
+.bagrow.live{border-color:rgba(94,210,156,.4)}
+
+/* ---------------------------------------------------------- remote control */
+/* Three columns that collapse to one on a phone: instrument, pad, altitude.
+   The pad is deliberately big -- these are pressed with a thumb, outdoors,
+   while looking at an aircraft rather than at the screen. */
+.rc-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr));
+         gap:14px; align-items:start; margin-top:12px}
+.rc-cell{display:flex; flex-direction:column; align-items:center; gap:8px}
+
+/* Sky and ground stay sky and ground -- an attitude ball in brand colours is
+   one you have to think about. */
+.horizon{width:100%; max-width:220px; aspect-ratio:1; display:block}
+.horizon .sky{fill:#1d4d7a}
+.horizon .ground{fill:#5a3a1c}
+.horizon .horizon-line{stroke:#f4f7f6; stroke-width:2}
+.horizon .pitch-ladder line{stroke:#d3dbd8; stroke-width:1.2}
+.horizon .pitch-ladder text{fill:#d3dbd8; font-size:9px; text-anchor:middle}
+.horizon .bezel{fill:none; stroke:var(--line-strong); stroke-width:3}
+.horizon .crosshair{stroke:var(--accent); stroke-width:3; fill:none}
+.horizon .rollptr{fill:var(--accent)}
+/* 5 Hz is choppy for an attitude ball; one poll interval of easing hides the
+   step without pretending to data we do not have. */
+#rc-ball{transition:transform .18s linear}
+
+.dpad{display:grid; grid-template-columns:repeat(3,1fr); gap:7px; width:100%;
+      max-width:230px}
+.dpad-mid{display:flex; align-items:center; justify-content:center;
+          font-size:12px; color:var(--dim); border:1px dashed var(--line-strong);
+          border-radius:12px; text-align:center; white-space:pre-line}
+button.rc-btn{font-size:19px; line-height:1; padding:14px 0; background:var(--card2);
+              border:1px solid var(--line-strong); color:var(--fg); border-radius:12px;
+              letter-spacing:0}
+button.rc-btn small{display:block; font-size:9px; color:var(--dim); margin-top:2px}
+button.rc-btn:hover:not(:disabled){background:#17211e; border-color:rgba(94,210,156,.45);
+                                   transform:none}
+button.rc-btn:active:not(:disabled){background:rgba(94,210,156,.18)}
+
+.tape{position:relative; width:54px; height:190px; border:1px solid var(--line-strong);
+      border-radius:12px; background:#0a100f; overflow:hidden}
+.tape-band{position:absolute; inset:0; background:linear-gradient(
+   to top, rgba(94,210,156,.10), rgba(108,182,255,.14))}
+.tape-now{position:absolute; left:0; right:0; height:0;
+          border-top:3px solid var(--accent); transition:bottom .18s linear}
+.tape-ghost{position:absolute; left:0; right:0; height:0;
+            border-top:2px dashed var(--idle)}
+.tape-lab{position:absolute; left:0; right:0; text-align:center; font-size:10px;
+          color:var(--dim)}
+.tape-top{top:3px} .tape-bot{bottom:3px}
+#rc-alt-slider{width:100%; max-width:200px; accent-color:var(--accent)}
+.rc-abort{border-left:3px solid var(--warn); padding-left:10px}
+
+/* Goal progress. Colour-coded by outcome, because the two states an operator
+   must not misread -- "nothing is flying" and "no progress" -- look exactly
+   like "moving" if they are only words. */
+.rc-prog{margin-top:14px; padding:11px 14px; border-radius:12px;
+         background:var(--card2); border:1px solid var(--line-strong)}
+.rc-prog-head{display:flex; align-items:baseline; justify-content:space-between;
+              gap:10px; flex-wrap:wrap}
+.rc-prog-head b{font-size:15px}
+.rc-prog-dist{font:13px/1.4 var(--mono); color:var(--dim)}
+.rc-prog-bar{height:6px; border-radius:999px; background:#050807; margin-top:8px;
+             overflow:hidden}
+.rc-prog-bar>div{height:100%; width:0; background:var(--idle);
+                 transition:width .35s linear}
+.rc-prog.moving{border-color:#1f4b7a}
+.rc-prog.arrived{border-color:rgba(94,210,156,.4); background:rgba(94,210,156,.07)}
+.rc-prog.arrived b{color:var(--ok)}
+.rc-prog.arrived .rc-prog-bar>div{background:var(--ok)}
+.rc-prog.idle{border-color:#7a5418; background:#221810}
+.rc-prog.idle b{color:var(--warn)}
+.rc-prog.idle .rc-prog-bar>div{background:var(--warn)}
+.rc-prog.stalled,.rc-prog.rejected{border-color:#7a2226; background:#261113}
+.rc-prog.stalled b,.rc-prog.rejected b{color:var(--bad)}
+.rc-prog.stalled .rc-prog-bar>div,.rc-prog.rejected .rc-prog-bar>div{background:var(--bad)}
+.rc-prog.unknown b{color:var(--faint)}
+.rc-path{margin:10px 0 0; border-left:3px solid var(--accent); padding-left:10px}
+
+/* Heading. Small on purpose: it answers one question the ball cannot. */
+.compass{width:100%; max-width:120px; aspect-ratio:1; display:block}
+.compass .bezel{fill:#0a100f; stroke:var(--line-strong); stroke-width:2}
+.compass .ticks line{stroke:#56625e; stroke-width:1.5}
+.compass text{fill:#d3dbd8; font:600 13px/1 var(--mono); text-anchor:middle}
+.compass .card-n{fill:var(--accent)}
+.compass .nose{fill:var(--accent)}
+
+/* Typed entry beside every preset. Numbers stay monospace so a mistyped digit
+   is visible at a glance -- these are metres the aircraft will fly. */
+.rc-typed{gap:6px; align-items:center; flex-wrap:wrap; justify-content:center}
+.rc-typed label{color:var(--dim); font-size:12px}
+.rc-typed .unit{color:var(--faint); font-size:12px; margin-left:-2px}
+.rc-typed input[type=number]{width:74px}
+
+.rc-bar{margin-top:16px; border-top:1px solid var(--line); padding-top:12px}
+.rc-bar h3{margin:0 0 6px}
+.rc-now{font:12px/1.5 var(--mono); color:var(--dim); white-space:pre-wrap;
+        margin-bottom:8px}
+.rc-fields{gap:6px; align-items:center; flex-wrap:wrap}
+.rc-fields label{color:var(--dim); font-size:13px; min-width:10px}
+.rc-fields input[type=number]{width:88px}
+input[type=number]{
+  background:#0a100f; border:1px solid var(--line-strong); border-radius:10px;
+  color:var(--fg); font:14px/1.2 var(--mono); padding:7px 9px;
+  transition:border-color .15s, box-shadow .15s}
+input[type=number]:focus{outline:none; border-color:var(--accent);
+                         box-shadow:0 0 0 3px rgba(94,210,156,.15)}
+input[type=number]:disabled{opacity:.45; cursor:not-allowed}
+input[type=number].bad{border-color:var(--bad)}
+.rc-cell .big{font-size:26px}
+
+/* The Flight day card: numbered steps under phase headers. */
+.flight-mode{display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:0 0 4px}
+.flight-mode .note{margin:0; flex:1 1 220px; min-width:0}
+.steps{display:flex; flex-direction:column; gap:6px}
+.steps .phase{margin:14px 0 4px; font:700 10.5px/1.3 var(--font-display); letter-spacing:.2em;
+              text-transform:uppercase; color:rgba(255,255,255,.55)}
+.steps .phase small{display:block; font:400 12px/1.4 var(--font-sans); letter-spacing:0;
+                    text-transform:none; color:var(--faint); margin-top:3px}
+.step{display:flex; align-items:center; gap:10px; padding:8px 12px; flex-wrap:wrap;
+      background:var(--card2); border:1px solid var(--line); border-radius:12px}
+.step .n{font:600 12px/1 var(--mono); color:var(--faint); flex:0 0 26px}
+.step .title{font-weight:600; flex:1 1 240px; min-width:0}
+.step .title small{display:block; font-weight:400; color:var(--faint); font-size:12px; margin-top:2px}
+.step .title code{white-space:normal; word-break:break-all}
+.step .pill{flex:none}
+.step .acts{display:flex; gap:6px; flex:none}
+/* display:flex above would otherwise beat the hidden attribute. */
+.step[hidden]{display:none}
+.step.done{border-color:rgba(94,210,156,.3)}
+.step.failed{border-color:#7a2226}

@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>super_bringup</name>
+  <version>0.0.1</version>
+  <description>
+    Integration bringup (launch + config) wiring real LiDAR-inertial odometry
+    (FAST-LIO2 + Livox MID360) into the SUPER planner. Home of the M1 state-estimation
+    launch; home of the M2 odometry bridge and the M3 Offboard trajectory bridge.
+  </description>
+  <maintainer email="adityaabhangusa@gmail.com">ideas-ad</maintainer>
+  <license>GPL-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>fast_lio</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>px4_msgs</exec_depend>
+  <exec_depend>mars_quadrotor_msgs</exec_depend>
+  <exec_depend>super_planner</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>orbbec_camera</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

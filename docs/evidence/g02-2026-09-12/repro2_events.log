@@ -1,0 +1,6 @@
+1789270030.40 start run.sh
+1789270055.41 start recorder
+1789270085.42 start SECOND driver (sensors.launch.py camera:=false, xfer_format:=0 = PointCloud2, as dtp_system.launch.py defaults)
+1789270205.42 SIGINT second driver pgid 36548
+1789270295.43 stop recorder and stack
+1789270320.45 done

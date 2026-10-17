@@ -1,0 +1,10 @@
+# The public EigenTrajectory clone + its datasets and pretrained checkpoints (~100 MB,
+# fetched by hand -- see docs/m6.6-predictor-study.md). Never in git -- except our own
+# eigen.py shim inside it, which is what makes the adapter load the public model.
+detection_pipeline/EigenTrajectory/*
+!detection_pipeline/EigenTrajectory/eigen.py
+
+# The AGX's EigenTrajectory weights tarball (155 MB, fetched by hand, byte-identical
+# public checkpoints -- see docs/m6.6-predictor-study.md Sec. 8). Never in git: it is
+# over GitHub's 100 MB file limit, and CLAUDE.md warns against `git add -A` here.
+weights/

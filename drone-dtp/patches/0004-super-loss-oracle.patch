@@ -1,0 +1,897 @@
+diff --git a/super_planner/include/super_core/loss_oracle.hpp b/super_planner/include/super_core/loss_oracle.hpp
+new file mode 100644
+--- /dev/null
++++ b/super_planner/include/super_core/loss_oracle.hpp
+@@ -0,0 +1,507 @@
++/**
++ * M6.1 / M6.4 (DTP) -- the loss oracle: WHY did the camera stop seeing the followed person,
++ * and where and when will they re-emerge?
++ *
++ * Lives inside fsm_node so it reads the SAME ROG-Map the planner avoids obstacles with (the
++ * paper's "one map, two consumers"); a separate node would need a second raycasting map and
++ * double that CPU. It uses only ROG-Map's public query API (getGridType / getInfGridType) plus
++ * the voxel ray caster, and never writes to the map.
++ *
++ * Classification (paper Eq. 1, docs/m5-m6-plan.md SS5.0), per coasting /dtp/follow_target:
++ *   1. OUT_OF_VIEW first: the CTRV point is outside the camera's +-fov_half_deg cone. No rays.
++ *   2. Sample the target's bounding cylinder (radius cyl_radius, heights sample_dz about the
++ *      reported point, lateral_n offsets perpendicular to the line of sight) and cast one ray
++ *      from the CAMERA optical centre to each sample, stopping r_excl short of it so the
++ *      person's own (still-occupied) cells never count as an occluder.
++ *   3. Label each ray by its first non-free cell: OCC, UNK (unknown or off the map) or free.
++ *   4. OCCLUDED if the OCC fraction >= rho_star, else UNMAPPED if the UNK fraction >= rho_star,
++ *      else LOST. A trunk comes out OCCLUDED because the ray hits it before the unknown space
++ *      behind it. LOST with a clear line of sight includes detector false negatives -- correct
++ *      by design.
++ *
++ * Reappearance belief, OCCLUDED only:
++ *   1. Occluder extent: from the blocked ray nearest the centre, sweep the bearing left and
++ *      right in one-cell angular steps at the target's range; a column is free when none of its
++ *      height samples is blocked; edge_free_columns consecutive free columns end the occluder.
++ *   2. Rollouts: K CTRV samples around the target's velocity / turn rate. A rollout re-emerges
++ *      at its first point that is outside the occluder's angular interval AND has a ray from the
++ *      camera with no OCCUPIED cell (unknown is allowed -- the map behind a trunk IS unknown).
++ *      Clustered by side; rollouts that never re-emerge within the horizon are still_hidden_w.
++ *   3. Reduction: yaw_target = the dominant cluster's mean; viewpoint = the candidate on the
++ *      standoff annulus about that point with a free line of sight to it, at least min_standoff
++ *      from the hidden person's position and outside inflated occupancy, nearest the drone.
++ *
++ * THE TARGET'S OWN SHADOW IS NOT "UNMAPPED". Found on the bench gate (loss_oracle_check.py O3):
++ * a person walking straight away from the sensor leaves a corridor of cells along the line of
++ * sight that are UNKNOWN -- either their own returns decaying out of OCCUPIED (a cell leaving
++ * OCCUPIED reads UNKNOWN for ~74 rays), or, with the M5.3a target filter on, cells that were
++ * never observed at all because the filter masked every ray inside the cylinder. A ray to the
++ * coast point crosses that corridor first, and "first non-free cell" then says UNMAPPED for a
++ * loss that is plainly LOST. So the caller passes the recent SEEN positions of the target (the
++ * trail), and an UNKNOWN cell within trail_radius of any of them is treated as free: it is
++ * unknown because the person stood there, not because the map never looked. OCCUPIED cells are
++ * never excused this way -- a trunk the person brushed past is on the trail too, and hiding it
++ * would miss exactly the occlusion the classifier exists to find. A trail of OCCUPIED cells (the
++ * filter off) therefore still reads OCCLUDED; the filter is the fix for that, by design.
++ *
++ * THE SENSOR'S FLOOR. The MID360 looks no lower than fov_floor_deg (7 deg) below its horizon, so
++ * at range d the map knows nothing below z_sensor - d * tan(7 deg): 0.5 m below the sensor at
++ * 4 m, 1 m at 8 m. Cells there are UNKNOWN for ever, not because the space is unmapped but
++ * because the sensor cannot look there. Sample heights below that plane are dropped (and counted
++ * in heights_dropped) rather than read as UNKNOWN; if none survives, the cylinder is sampled at
++ * the lowest knowable height. Consequence, stated for the paper: an occluder is classifiable only
++ * where it rises above the sensor's floor at its range -- a trunk or a 1.8 m tube does, a chest-
++ * high cabinet 4 m from a rig at head height does not (run5, 2026-09-14: the map held the cabinet
++ * only at its top, the person's head cleared it, and the honest verdict at the only knowable
++ * height is LOST).
++ *
++ * Every random draw comes from a generator seeded per event, so a bag replay reproduces the
++ * same belief for the same input.
++ */
++
++#pragma once
++
++#include <rog_map/rog_map.h>
++#include <rog_map/rog_map_core/raycaster.h>
++
++#include <Eigen/Eigen>
++#include <algorithm>
++#include <chrono>
++#include <cmath>
++#include <cstdint>
++#include <memory>
++#include <random>
++#include <string>
++#include <vector>
++
++namespace loss_oracle {
++    using super_utils::Vec3f;
++    using super_utils::Quatf;
++    using super_utils::GridType;
++
++    enum LossClass : int {
++        OCCLUDED = 0,
++        UNMAPPED = 1,
++        LOST = 2,
++        OUT_OF_VIEW = 3
++    };
++
++    inline const char *className(int c) {
++        switch (c) {
++            case OCCLUDED: return "OCCLUDED";
++            case UNMAPPED: return "UNMAPPED";
++            case LOST: return "LOST";
++            case OUT_OF_VIEW: return "OUT_OF_VIEW";
++            default: return "?";
++        }
++    }
++
++    struct Params {
++        // Camera optical centre and axis in the BODY (lidar_imu) frame. Defaults are the
++        // deployed static_calib_tf value (lidar_imu -> camera optical, 2026-09-13). 8 cm is
++        // under one voxel, so the exact number matters little; the yaw offset matters if the
++        // camera is ever mounted off the nose.
++        std::vector<double> camera_offset_body{0.084, 0.008, 0.067};
++        double camera_yaw_offset_deg{0.0};
++        double fov_half_deg{35.0};           // = follow_planner's camera_fov_half_deg
++        double fov_floor_deg{7.0};           // the LiDAR's downward view limit (MID360: -7 deg)
++
++        double cyl_radius{0.25};
++        std::vector<double> sample_dz{-0.5, 0.0, 0.4};
++        int lateral_n{5};
++        double r_excl{0.4};
++        double rho_star{0.5};
++        double ray_skip_start_m{0.3};        // the aircraft's own cells around the sensor
++
++        double edge_max_m{4.0};
++        int edge_free_columns{3};
++
++        int rollouts{32};
++        double horizon_s{3.2};
++        double step_s{0.1};
++        double sigma_v{0.3};
++        double sigma_omega{0.5};
++        double sigma_heading{0.2};
++        double speed_floor{0.25};            // below it the velocity direction is noise
++
++        double standoff_near{3.0};
++        double standoff_far{4.0};
++        double min_standoff{2.5};
++        double viewpoint_height_offset{0.5};
++        double viewpoint_z_min{0.5};
++        double viewpoint_z_max{3.0};
++        double viewpoint_az_step_deg{15.0};
++
++        // The target's own shadow (see the header comment). trail_radius = the M5.3a filter's
++        // radius; the vertical band is the filter's too.
++        double trail_radius{0.6};
++        double trail_z_below{1.0};
++        double trail_z_above{1.3};
++    };
++
++    struct Cluster {
++        Vec3f mean{Vec3f::Zero()};
++        double dt_med{0.0}, dt_min{0.0}, dt_max{0.0}, sigma{0.0}, w{0.0};
++        int side{0};                         // +1 left of the occluder (seen from the camera)
++    };
++
++    struct Result {
++        int cls{LOST};
++        double blocked_fraction{0.0}, unknown_fraction{0.0};
++        int rays_cast{0};
++        Vec3f query_p{Vec3f::Zero()}, camera_p{Vec3f::Zero()};
++        double bearing_deg{0.0};
++        bool occluder_valid{false};
++        Vec3f occluder_p{Vec3f::Zero()};
++        bool edge_left_valid{false}, edge_right_valid{false};
++        Vec3f edge_left{Vec3f::Zero()}, edge_right{Vec3f::Zero()};
++        std::vector<Cluster> clusters;
++        double still_hidden_w{0.0};
++        int rollouts{0};
++        // Sample heights below the lowest height the map can know at this range (virtual
++        // ground, or the sensor's downward view limit -- see the header) and dropped. When ALL
++        // are dropped the cylinder is sampled at that floor instead, and fsm_ros2 warns.
++        int heights_dropped{0}, heights_total{0};
++        double ground_z{0.0};                // the floor actually applied (metres, lidar_init)
++        Vec3f yaw_target_p{Vec3f::Zero()};
++        bool viewpoint_valid{false};
++        Vec3f viewpoint_p{Vec3f::Zero()};
++        uint32_t classify_us{0}, eval_us{0};
++    };
++
++    class LossOracle {
++    public:
++        typedef std::shared_ptr<LossOracle> Ptr;
++
++        LossOracle(std::shared_ptr<rog_map::ROGMap> map, const Params &p) : map_(std::move(map)), p_(p) {
++            const auto cfg = map_->getMapConfig();
++            res_ = cfg.resolution;
++            // cfg_.virtual_ground_height is rewritten at map init to the EFFECTIVE plane (the
++            // index the map actually tests against), so this is the plane getGridType uses.
++            ground_z_ = cfg.virtual_ground_height;
++            ceil_z_ = cfg.virtual_ceil_height;
++            if (p_.lateral_n < 1) p_.lateral_n = 1;
++            if (p_.rollouts < 1) p_.rollouts = 1;
++            if (p_.step_s <= 0.0) p_.step_s = 0.1;
++            if (p_.camera_offset_body.size() != 3) p_.camera_offset_body = {0.0, 0.0, 0.0};
++            if (p_.sample_dz.empty()) p_.sample_dz = {0.0};
++        }
++
++        const Params &params() const { return p_; }
++
++        // `trail`: the target's recent SEEN positions (any order), or empty.
++        Result evaluate(const Vec3f &target_p, const Vec3f &target_v,
++                        const std::vector<Vec3f> &path, const std::vector<double> &path_dt,
++                        const Vec3f &body_p, const Quatf &body_q, uint64_t seed,
++                        const std::vector<Vec3f> &trail = std::vector<Vec3f>{}) const {
++            using clock = std::chrono::steady_clock;
++            const auto t0 = clock::now();
++            trail_ = &trail;
++            Result r;
++            r.query_p = target_p;
++            r.yaw_target_p = target_p;
++
++            // Camera pose from the body pose.
++            const Eigen::Matrix3d R = body_q.normalized().toRotationMatrix();
++            const Vec3f cam_off(p_.camera_offset_body[0], p_.camera_offset_body[1], p_.camera_offset_body[2]);
++            const Vec3f c = body_p + R * cam_off;
++            r.camera_p = c;
++            const double body_yaw = std::atan2(R(1, 0), R(0, 0));
++            const double cam_yaw = body_yaw + p_.camera_yaw_offset_deg * M_PI / 180.0;
++
++            const double dx = target_p.x() - c.x(), dy = target_p.y() - c.y();
++            const double d_t = std::hypot(dx, dy);
++            const double bearing = wrapPi(std::atan2(dy, dx) - cam_yaw);
++            r.bearing_deg = bearing * 180.0 / M_PI;
++
++            if (d_t < 1e-3) {
++                // Person effectively overhead: no bearing, no line of sight to speak of.
++                r.cls = LOST;
++                r.classify_us = us_since(t0);
++                r.eval_us = r.classify_us;
++                return r;
++            }
++            if (std::fabs(bearing) > p_.fov_half_deg * M_PI / 180.0) {
++                r.cls = OUT_OF_VIEW;
++                r.classify_us = us_since(t0);
++                r.eval_us = r.classify_us;
++                return r;
++            }
++
++            // ---- Eq. 1: rays over the bounding cylinder ---------------------------------
++            const Vec3f u(dx / d_t, dy / d_t, 0.0);        // line of sight, horizontal
++            const Vec3f n(-u.y(), u.x(), 0.0);             // left of the line of sight
++            int n_occ = 0, n_unk = 0, n_rays = 0;
++            double best_ang = 1e9;
++            r.heights_total = static_cast<int>(p_.sample_dz.size());
++            // The lowest height the map can know at this range: above the virtual ground, and
++            // above the sensor's own downward view limit (see the header).
++            const double z_floor = std::max(ground_z_ + res_,
++                                            c.z() - d_t * std::tan(p_.fov_floor_deg * M_PI / 180.0) + res_);
++            r.ground_z = z_floor;
++            std::vector<double> heights;
++            for (const double dz : p_.sample_dz) {
++                const double z = target_p.z() + dz;
++                if (z <= z_floor || z >= ceil_z_ - res_) {
++                    ++r.heights_dropped;
++                    continue;
++                }
++                heights.push_back(z);
++            }
++            if (heights.empty()) {
++                heights.push_back(std::min(z_floor + res_, ceil_z_ - 2.0 * res_));
++            }
++            for (const double z : heights) {
++                const double dz = z - target_p.z();
++                for (int i = 0; i < p_.lateral_n; ++i) {
++                    const double f = (p_.lateral_n == 1) ? 0.0
++                                                          : (-1.0 + 2.0 * i / (p_.lateral_n - 1));
++                    const Vec3f s = target_p + n * (f * p_.cyl_radius) + Vec3f(0, 0, dz);
++                    Vec3f hit;
++                    const RayLabel lab = castRay(c, s, p_.r_excl, &hit);
++                    ++n_rays;
++                    if (lab == RAY_OCC) {
++                        ++n_occ;
++                        const double ang = std::fabs(f) + std::fabs(dz);   // "closest to centre"
++                        if (ang < best_ang) {
++                            best_ang = ang;
++                            r.occluder_p = hit;
++                            r.occluder_valid = true;
++                        }
++                    } else if (lab == RAY_UNK) {
++                        ++n_unk;
++                    }
++                }
++            }
++            r.rays_cast = n_rays;
++            r.blocked_fraction = static_cast<double>(n_occ) / n_rays;
++            r.unknown_fraction = static_cast<double>(n_unk) / n_rays;
++            if (r.blocked_fraction >= p_.rho_star && r.occluder_valid) {
++                r.cls = OCCLUDED;
++            } else if (r.unknown_fraction >= p_.rho_star) {
++                r.cls = UNMAPPED;
++            } else {
++                r.cls = LOST;
++            }
++            r.classify_us = us_since(t0);
++            if (r.cls != OCCLUDED) {
++                r.eval_us = us_since(t0);
++                return r;
++            }
++
++            // ---- occluder extent ---------------------------------------------------------
++            const double occ_bearing = std::atan2(r.occluder_p.y() - c.y(), r.occluder_p.x() - c.x());
++            const double d_occ = std::max(std::hypot(r.occluder_p.x() - c.x(), r.occluder_p.y() - c.y()), res_);
++            const double dtheta = res_ / d_occ;
++            const int k_max = static_cast<int>(std::ceil(p_.edge_max_m / res_));
++            double th_left = 0.0, th_right = 0.0;     // angular half-extents, relative to occ_bearing
++            for (int side = 1; side >= -1; side -= 2) {
++                int free_run = 0;
++                bool found = false;
++                Vec3f last_blocked = r.occluder_p;
++                double last_blocked_th = 0.0;
++                for (int k = 1; k <= k_max; ++k) {
++                    const double th = side * k * dtheta;
++                    const double b = occ_bearing + th;
++                    const Vec3f dir(std::cos(b), std::sin(b), 0.0);
++                    bool blocked = false, have_mid = false;
++                    Vec3f hit_here = Vec3f::Zero();
++                    for (const double z : heights) {
++                        const double dz = z - target_p.z();
++                        Vec3f s = c + dir * d_t;
++                        s.z() = z;
++                        Vec3f hit;
++                        if (castRay(c, s, p_.r_excl, &hit) == RAY_OCC) {
++                            // Prefer the hit at the target's own height as the edge point.
++                            if (!blocked || (std::fabs(dz) < 1e-9 && !have_mid)) hit_here = hit;
++                            if (std::fabs(dz) < 1e-9) have_mid = true;
++                            blocked = true;
++                        }
++                    }
++                    if (blocked) {
++                        free_run = 0;
++                        last_blocked = hit_here;
++                        last_blocked_th = th;
++                    } else if (++free_run >= p_.edge_free_columns) {
++                        found = true;
++                        break;
++                    }
++                }
++                if (side > 0) {
++                    r.edge_left = last_blocked;
++                    r.edge_left_valid = found;
++                    th_left = found ? std::fabs(last_blocked_th) + 0.5 * dtheta : 1e9;
++                } else {
++                    r.edge_right = last_blocked;
++                    r.edge_right_valid = found;
++                    th_right = found ? std::fabs(last_blocked_th) + 0.5 * dtheta : 1e9;
++                }
++            }
++
++            // ---- rollouts ----------------------------------------------------------------
++            double s0 = std::hypot(target_v.x(), target_v.y());
++            double h0 = std::atan2(target_v.y(), target_v.x());
++            if (s0 < p_.speed_floor && path.size() >= 2) {
++                // A coasted target's velocity may be tiny while its forecast still points
++                // somewhere: take the heading from the forecast's chord.
++                const Vec3f d = path.back() - path.front();
++                if (d.head<2>().norm() > 0.1) h0 = std::atan2(d.y(), d.x());
++            }
++            double w0 = 0.0;
++            if (path.size() >= 3 && path_dt.size() == path.size()) {
++                const Vec3f a = path[1] - path[0];
++                const Vec3f b = path.back() - path[path.size() - 2];
++                const double span = path_dt.back() - path_dt[1];
++                if (a.head<2>().norm() > 1e-3 && b.head<2>().norm() > 1e-3 && span > 1e-3) {
++                    w0 = wrapPi(std::atan2(b.y(), b.x()) - std::atan2(a.y(), a.x())) / span;
++                    w0 = std::max(-1.2, std::min(1.2, w0));
++                }
++            }
++            std::mt19937_64 rng(seed);
++            std::normal_distribution<double> g(0.0, 1.0);
++            const int n_steps = std::max(1, static_cast<int>(std::ceil(p_.horizon_s / p_.step_s)));
++            struct Exit { Vec3f p; double t; int side; };
++            std::vector<Exit> exits;
++            exits.reserve(p_.rollouts);
++            int hidden = 0;
++            for (int k = 0; k < p_.rollouts; ++k) {
++                const double s = std::max(0.0, s0 + p_.sigma_v * g(rng));
++                const double w = w0 + p_.sigma_omega * g(rng);
++                double h = h0 + p_.sigma_heading * g(rng);
++                Vec3f p = target_p;
++                bool out = false;
++                for (int i = 1; i <= n_steps; ++i) {
++                    h += w * p_.step_s;
++                    p.x() += s * p_.step_s * std::cos(h);
++                    p.y() += s * p_.step_s * std::sin(h);
++                    const double th = wrapPi(std::atan2(p.y() - c.y(), p.x() - c.x()) - occ_bearing);
++                    const bool outside = (th > th_left) || (th < -th_right);
++                    if (!outside) continue;
++                    Vec3f look = p;
++                    look.z() = heights.back();          // the map's knowable band, not the waist
++                    if (castRay(c, look, p_.r_excl, nullptr) == RAY_OCC) continue;
++                    exits.push_back({p, i * p_.step_s, th > 0.0 ? +1 : -1});
++                    out = true;
++                    break;
++                }
++                if (!out) ++hidden;
++            }
++            r.rollouts = p_.rollouts;
++            r.still_hidden_w = static_cast<double>(hidden) / p_.rollouts;
++            for (int side = 1; side >= -1; side -= 2) {
++                std::vector<const Exit *> members;
++                for (const auto &e : exits) if (e.side == side) members.push_back(&e);
++                if (members.empty()) continue;
++                Cluster cl;
++                cl.side = side;
++                cl.w = static_cast<double>(members.size()) / p_.rollouts;
++                Vec3f mean = Vec3f::Zero();
++                std::vector<double> ts;
++                for (const auto *e : members) { mean += e->p; ts.push_back(e->t); }
++                mean /= static_cast<double>(members.size());
++                double var = 0.0;
++                for (const auto *e : members) var += (e->p - mean).head<2>().squaredNorm();
++                cl.sigma = std::sqrt(var / members.size());
++                std::sort(ts.begin(), ts.end());
++                cl.dt_min = ts.front();
++                cl.dt_max = ts.back();
++                cl.dt_med = ts[ts.size() / 2];
++                cl.mean = mean;
++                r.clusters.push_back(cl);
++            }
++            std::sort(r.clusters.begin(), r.clusters.end(),
++                      [](const Cluster &a, const Cluster &b) { return a.w > b.w; });
++            if (!r.clusters.empty()) {
++                r.yaw_target_p = r.clusters.front().mean;
++            }
++
++            // ---- viewpoint ---------------------------------------------------------------
++            if (!r.clusters.empty()) {
++                const Vec3f centre = r.yaw_target_p;
++                const double radii[3] = {p_.standoff_near, 0.5 * (p_.standoff_near + p_.standoff_far),
++                                         p_.standoff_far};
++                const double z = std::min(std::max(target_p.z() + p_.viewpoint_height_offset,
++                                                   p_.viewpoint_z_min), p_.viewpoint_z_max);
++                double best_d = 1e18;
++                const double step = std::max(1.0, p_.viewpoint_az_step_deg) * M_PI / 180.0;
++                for (double az = -M_PI; az < M_PI - 1e-9; az += step) {
++                    for (const double rad : radii) {
++                        Vec3f q(centre.x() + rad * std::cos(az), centre.y() + rad * std::sin(az), z);
++                        if (std::hypot(q.x() - target_p.x(), q.y() - target_p.y()) < p_.min_standoff) continue;
++                        const GridType gt = map_->getInfGridType(q);
++                        if (gt == GridType::OCCUPIED || gt == GridType::OUT_OF_MAP) continue;
++                        Vec3f look = centre;
++                        look.z() = heights.back();
++                        if (castRay(q, look, p_.r_excl, nullptr) == RAY_OCC) continue;
++                        const double d = (q - body_p).norm();
++                        if (d < best_d) {
++                            best_d = d;
++                            r.viewpoint_p = q;
++                            r.viewpoint_valid = true;
++                        }
++                    }
++                }
++            }
++            r.eval_us = us_since(t0);
++            return r;
++        }
++
++    private:
++        enum RayLabel { RAY_FREE, RAY_OCC, RAY_UNK };
++
++        // Walk the voxel ray from `from` toward `to`, ignoring the first ray_skip_start_m and the
++        // last stop_short metres, and report the first non-free cell.
++        RayLabel castRay(const Vec3f &from, const Vec3f &to, double stop_short, Vec3f *hit) const {
++            const double total = (to - from).norm();
++            if (total < 1e-6) return RAY_FREE;
++            const double limit = total - stop_short;
++            if (limit <= p_.ray_skip_start_m) return RAY_FREE;
++            rog_map::raycaster::RayCaster rc(res_);
++            if (!rc.setInput(from, to)) return RAY_FREE;
++            Vec3f pt;
++            while (rc.step(pt)) {
++                const double d = (pt - from).norm();
++                if (d < p_.ray_skip_start_m) continue;
++                if (d > limit) break;
++                const GridType gt = map_->getGridType(pt);
++                if (gt == GridType::OCCUPIED) {
++                    if (hit) *hit = pt;
++                    return RAY_OCC;
++                }
++                if (gt == GridType::UNKNOWN || gt == GridType::OUT_OF_MAP || gt == GridType::FRONTIER) {
++                    if (gt != GridType::OUT_OF_MAP && onTrail(pt)) continue;
++                    if (hit) *hit = pt;
++                    return RAY_UNK;
++                }
++            }
++            return RAY_FREE;
++        }
++
++        bool onTrail(const Vec3f &pt) const {
++            if (trail_ == nullptr) return false;
++            for (const auto &q : *trail_) {
++                const double dz = pt.z() - q.z();
++                if (dz < -p_.trail_z_below || dz > p_.trail_z_above) continue;
++                if (std::hypot(pt.x() - q.x(), pt.y() - q.y()) <= p_.trail_radius) return true;
++            }
++            return false;
++        }
++
++        static double wrapPi(double a) {
++            while (a > M_PI) a -= 2.0 * M_PI;
++            while (a < -M_PI) a += 2.0 * M_PI;
++            return a;
++        }
++
++        template<typename T>
++        static uint32_t us_since(const T &t0) {
++            return static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::microseconds>(
++                    std::chrono::steady_clock::now() - t0).count());
++        }
++
++        std::shared_ptr<rog_map::ROGMap> map_;
++        Params p_;
++        double res_{0.1}, ground_z_{-1.0}, ceil_z_{3.5};
++        mutable const std::vector<Vec3f> *trail_{nullptr};   // valid during evaluate() only
++    };
++}
+diff --git a/super_planner/include/fsm/config.hpp b/super_planner/include/fsm/config.hpp
+--- a/super_planner/include/fsm/config.hpp
++++ b/super_planner/include/fsm/config.hpp
+@@ -55,6 +55,23 @@
+         bool follow_goal_en{false};
+         string follow_goal_topic, goal_status_topic, yaw_target_topic;
+ 
++        // M6.1 (DTP). The loss oracle: classifies WHY the followed person was lost against
++        // ROG-Map and publishes dtp_msgs/LossEvent. Default OFF. Parameters are the paper's
++        // SS2.4 starting values; see super_core/loss_oracle.hpp.
++        bool loss_oracle_en{false};
++        string loss_oracle_target_topic, loss_oracle_event_topic;
++        vector<double> loss_oracle_camera_offset_body, loss_oracle_sample_dz;
++        double loss_oracle_camera_yaw_offset_deg{}, loss_oracle_fov_half_deg{}, loss_oracle_fov_floor_deg{},
++                loss_oracle_cyl_radius{},
++                loss_oracle_r_excl{}, loss_oracle_rho_star{}, loss_oracle_ray_skip_start_m{},
++                loss_oracle_edge_max_m{}, loss_oracle_horizon_s{}, loss_oracle_step_s{},
++                loss_oracle_sigma_v{}, loss_oracle_sigma_omega{}, loss_oracle_sigma_heading{},
++                loss_oracle_standoff_near{}, loss_oracle_standoff_far{}, loss_oracle_min_standoff{},
++                loss_oracle_viewpoint_height_offset{}, loss_oracle_viewpoint_z_min{},
++                loss_oracle_viewpoint_z_max{}, loss_oracle_log_period_s{}, loss_oracle_trail_radius{},
++                loss_oracle_trail_z_below{}, loss_oracle_trail_z_above{}, loss_oracle_trail_window_s{};
++        int loss_oracle_lateral_n{}, loss_oracle_edge_free_columns{}, loss_oracle_rollouts{};
++
+         Config() = default;
+ 
+         Config(const std::string & cfg_path) {
+@@ -75,6 +92,41 @@
+             loader.LoadParam("fsm/goal_status_topic", goal_status_topic, string("/planning/goal_status"));
+             loader.LoadParam("fsm/yaw_target_topic", yaw_target_topic, string("/planning/yaw_target"));
+ 
++            // M6.1 -- loss oracle (ROS2 only; ignored by the ROS1 build).
++            loader.LoadParam("loss_oracle/enable", loss_oracle_en, false);
++            loader.LoadParam("loss_oracle/target_topic", loss_oracle_target_topic, string("/dtp/follow_target"));
++            loader.LoadParam("loss_oracle/event_topic", loss_oracle_event_topic, string("/planning/loss_event"));
++            loader.LoadParam("loss_oracle/camera_offset_body", loss_oracle_camera_offset_body,
++                             vector<double>{0.084, 0.008, 0.067});
++            loader.LoadParam("loss_oracle/camera_yaw_offset_deg", loss_oracle_camera_yaw_offset_deg, 0.0);
++            loader.LoadParam("loss_oracle/fov_half_deg", loss_oracle_fov_half_deg, 35.0);
++            loader.LoadParam("loss_oracle/fov_floor_deg", loss_oracle_fov_floor_deg, 7.0);
++            loader.LoadParam("loss_oracle/cyl_radius", loss_oracle_cyl_radius, 0.25);
++            loader.LoadParam("loss_oracle/sample_dz", loss_oracle_sample_dz, vector<double>{-0.5, 0.0, 0.4});
++            loader.LoadParam("loss_oracle/lateral_n", loss_oracle_lateral_n, 5);
++            loader.LoadParam("loss_oracle/r_excl", loss_oracle_r_excl, 0.4);
++            loader.LoadParam("loss_oracle/rho_star", loss_oracle_rho_star, 0.5);
++            loader.LoadParam("loss_oracle/ray_skip_start_m", loss_oracle_ray_skip_start_m, 0.3);
++            loader.LoadParam("loss_oracle/edge_max_m", loss_oracle_edge_max_m, 4.0);
++            loader.LoadParam("loss_oracle/edge_free_columns", loss_oracle_edge_free_columns, 3);
++            loader.LoadParam("loss_oracle/rollouts", loss_oracle_rollouts, 32);
++            loader.LoadParam("loss_oracle/horizon_s", loss_oracle_horizon_s, 3.2);
++            loader.LoadParam("loss_oracle/step_s", loss_oracle_step_s, 0.1);
++            loader.LoadParam("loss_oracle/sigma_v", loss_oracle_sigma_v, 0.3);
++            loader.LoadParam("loss_oracle/sigma_omega", loss_oracle_sigma_omega, 0.5);
++            loader.LoadParam("loss_oracle/sigma_heading", loss_oracle_sigma_heading, 0.2);
++            loader.LoadParam("loss_oracle/standoff_near", loss_oracle_standoff_near, 3.0);
++            loader.LoadParam("loss_oracle/standoff_far", loss_oracle_standoff_far, 4.0);
++            loader.LoadParam("loss_oracle/min_standoff", loss_oracle_min_standoff, 2.5);
++            loader.LoadParam("loss_oracle/viewpoint_height_offset", loss_oracle_viewpoint_height_offset, 0.5);
++            loader.LoadParam("loss_oracle/viewpoint_z_min", loss_oracle_viewpoint_z_min, 0.5);
++            loader.LoadParam("loss_oracle/viewpoint_z_max", loss_oracle_viewpoint_z_max, 3.0);
++            loader.LoadParam("loss_oracle/log_period_s", loss_oracle_log_period_s, 5.0);
++            loader.LoadParam("loss_oracle/trail_radius", loss_oracle_trail_radius, 0.6);
++            loader.LoadParam("loss_oracle/trail_z_below", loss_oracle_trail_z_below, 1.0);
++            loader.LoadParam("loss_oracle/trail_z_above", loss_oracle_trail_z_above, 1.3);
++            loader.LoadParam("loss_oracle/trail_window_s", loss_oracle_trail_window_s, 6.0);
++
+ 
+             loader.LoadParam("super_planner/yaw_dot_max", yaw_dot_max, 1.0, true);
+             loader.LoadParam("super_planner/visualization_en", visualization_en, false, true);
+diff --git a/super_planner/include/ros_interface/ros2/fsm_ros2.hpp b/super_planner/include/ros_interface/ros2/fsm_ros2.hpp
+--- a/super_planner/include/ros_interface/ros2/fsm_ros2.hpp
++++ b/super_planner/include/ros_interface/ros2/fsm_ros2.hpp
+@@ -31,11 +31,14 @@
+ #include "fsm/fsm.h"
+ 
+ #include <rclcpp/rclcpp.hpp>
++#include <deque>
+ #include <ros_interface/ros2/ros2_interface.hpp>
+ #include "geometry_msgs/msg/pose_stamped.hpp"
+ #include "geometry_msgs/msg/point_stamped.hpp"
+ #include "dtp_msgs/msg/goal_status.hpp"
+ #include "dtp_msgs/msg/target.hpp"
++#include "dtp_msgs/msg/loss_event.hpp"
++#include "super_core/loss_oracle.hpp"
+ #include "nav_msgs/msg/path.hpp"
+ #include "nav_msgs/msg/odometry.hpp"
+ #include "mars_quadrotor_msgs/msg/position_command.hpp"
+@@ -57,6 +60,25 @@
+         // M5.3a (DTP) target-point filter input; created only when rog_map/target_exclusion/enable
+         rclcpp::Subscription<dtp_msgs::msg::Target>::SharedPtr target_exclusion_sub_;
+         rclcpp::CallbackGroup::SharedPtr target_exclusion_cbk_group_;
++        // M6.1 (DTP) loss oracle: created only when loss_oracle/enable. Its own callback group,
++        // so a classification never waits behind the planner's timers (nor they behind it).
++        rclcpp::Subscription<dtp_msgs::msg::Target>::SharedPtr loss_oracle_sub_;
++        rclcpp::Publisher<dtp_msgs::msg::LossEvent>::SharedPtr loss_event_pub_;
++        rclcpp::CallbackGroup::SharedPtr loss_oracle_cbk_group_;
++        loss_oracle::LossOracle::Ptr loss_oracle_;
++        struct LossOracleState {
++            uint32_t last_track{0};
++            uint32_t last_missed{0};
++            bool have_last{false};
++            long answered{0}, skipped_no_odom{0};
++            long cls_count[4]{0, 0, 0, 0};
++            std::vector<uint32_t> eval_us, classify_us;
++            double last_log_t{0.0};
++            // The locked target's recent SEEN positions (stamp seconds, position): the shadow
++            // rule in loss_oracle.hpp. Cleared when the track changes.
++            std::deque<std::pair<double, Vec3f>> trail;
++            double last_ground_warn_t{-1e9};
++        } lo_;
+ 
+         rclcpp::TimerBase::SharedPtr execution_timer_, replan_timer_, cmd_timer_;
+         rclcpp::CallbackGroup::SharedPtr exec_cbk_group_, replan_cbk_group_, cmd_cbk_group_, goal_cbk_group_;
+@@ -343,6 +365,153 @@
+                     rclcpp::Time(msg->header.stamp).seconds());
+         }
+ 
++        // M6.1 -- answer every COASTING follow target (missed_frames > 0) with a LossEvent.
++        // A seen frame (missed_frames == 0) only resets the onset bookkeeping: there is nothing
++        // to classify while the camera can see the person.
++        void lossOracleCallback(const dtp_msgs::msg::Target::SharedPtr msg) {
++            if (!msg->is_locked_target) {
++                return;
++            }
++            const uint32_t tid = msg->track_id;
++            const uint32_t missed = msg->missed_frames;
++            if (lo_.have_last && lo_.last_track != tid) {
++                lo_.trail.clear();
++            }
++            if (missed == 0) {
++                lo_.last_track = tid;
++                lo_.last_missed = 0;
++                lo_.have_last = true;
++                const double ts = rclcpp::Time(msg->header.stamp).seconds();
++                const Vec3f sp{msg->position.x, msg->position.y, msg->position.z};
++                if (sp.allFinite()) {
++                    lo_.trail.emplace_back(ts, sp);
++                    while (!lo_.trail.empty() && ts - lo_.trail.front().first > cfg_.loss_oracle_trail_window_s) {
++                        lo_.trail.pop_front();
++                    }
++                }
++                return;
++            }
++            const bool onset = !lo_.have_last || lo_.last_track != tid || lo_.last_missed == 0 ||
++                               missed <= lo_.last_missed;
++            lo_.last_track = tid;
++            lo_.last_missed = missed;
++            lo_.have_last = true;
++
++            const auto rs = map_ptr_->getRobotState();
++            if (!rs.rcv) {
++                ++lo_.skipped_no_odom;
++                return;
++            }
++            const Vec3f target_p{msg->position.x, msg->position.y, msg->position.z};
++            const Vec3f target_v{msg->velocity.x, msg->velocity.y, msg->velocity.z};
++            if (!target_p.allFinite() || !target_v.allFinite()) {
++                return;
++            }
++            std::vector<Vec3f> path;
++            std::vector<double> path_dt;
++            if (msg->predicted_path.size() == msg->predicted_path_dt.size()) {
++                path.reserve(msg->predicted_path.size());
++                for (size_t i = 0; i < msg->predicted_path.size(); ++i) {
++                    const auto &q = msg->predicted_path[i];
++                    if (!std::isfinite(q.x) || !std::isfinite(q.y) || !std::isfinite(q.z) ||
++                        !std::isfinite(msg->predicted_path_dt[i])) {
++                        break;
++                    }
++                    path.emplace_back(q.x, q.y, q.z);
++                    path_dt.push_back(msg->predicted_path_dt[i]);
++                }
++            }
++            const rclcpp::Time stamp(msg->header.stamp);
++            // Deterministic per event: the same bag frame gives the same belief on replay.
++            const uint64_t seed = static_cast<uint64_t>(tid) * 1000003ULL +
++                                  static_cast<uint64_t>(missed) * 7919ULL +
++                                  static_cast<uint64_t>(stamp.nanoseconds());
++            std::vector<Vec3f> trail;
++            trail.reserve(lo_.trail.size());
++            for (const auto &tp : lo_.trail) trail.push_back(tp.second);
++            const auto r = loss_oracle_->evaluate(target_p, target_v, path, path_dt, rs.p, rs.q, seed, trail);
++            if (r.heights_total > 0 && r.heights_dropped == r.heights_total) {
++                // Loud, once per 10 s: the verdict is being decided by ONE ray at the map's
++                // ground plane, well above the person. The map cannot represent anything lower.
++                const double now_s = nh_->get_clock()->now().seconds();
++                if (now_s - lo_.last_ground_warn_t > 10.0) {
++                    lo_.last_ground_warn_t = now_s;
++                    fmt::print(fg(fmt::color::orange),
++                               " -- [LossOracle] target z {:.2f} is BELOW the lowest height the map can know here "
++                               "({:.2f}: the virtual ground, or the sensor's {:.0f} deg floor at this range): all {} "
++                               "sample heights dropped, classifying at z {:.2f} instead. If this is the virtual ground, "
++                               "lidar_init's origin is too high above the floor (bench rig? FAST-LIO started at "
++                               "height?): start FAST-LIO at ground level or lower rog_map/virtual_ground_height. "
++                               "If it is the sensor floor, the occluder is below what this LiDAR can map at this "
++                               "range.\n",
++                               target_p.z(), r.ground_z, cfg_.loss_oracle_fov_floor_deg, r.heights_total,
++                               r.ground_z + map_ptr_->getResolution());
++                }
++            }
++
++            dtp_msgs::msg::LossEvent out;
++            out.header.stamp = msg->header.stamp;
++            out.header.frame_id = msg->header.frame_id;
++            out.eval_stamp = nh_->get_clock()->now();
++            out.track_id = tid;
++            out.missed_frames = missed;
++            out.onset = onset;
++            out.cls = static_cast<uint8_t>(r.cls);
++            out.blocked_fraction = static_cast<float>(r.blocked_fraction);
++            out.unknown_fraction = static_cast<float>(r.unknown_fraction);
++            out.rays_cast = static_cast<uint16_t>(r.rays_cast);
++            auto setp = [](geometry_msgs::msg::Point &o, const Vec3f &v) { o.x = v.x(); o.y = v.y(); o.z = v.z(); };
++            setp(out.query_p, r.query_p);
++            setp(out.camera_p, r.camera_p);
++            out.bearing_deg = static_cast<float>(r.bearing_deg);
++            setp(out.occluder_p, r.occluder_p);
++            setp(out.edge_left, r.edge_left);
++            setp(out.edge_right, r.edge_right);
++            out.edge_left_valid = r.edge_left_valid;
++            out.edge_right_valid = r.edge_right_valid;
++            for (const auto &cl : r.clusters) {
++                geometry_msgs::msg::Point pp;
++                setp(pp, cl.mean);
++                out.reappear_p.push_back(pp);
++                out.reappear_dt.push_back(static_cast<float>(cl.dt_med));
++                out.reappear_dt_min.push_back(static_cast<float>(cl.dt_min));
++                out.reappear_dt_max.push_back(static_cast<float>(cl.dt_max));
++                out.reappear_sigma_m.push_back(static_cast<float>(cl.sigma));
++                out.reappear_w.push_back(static_cast<float>(cl.w));
++                out.reappear_side.push_back(static_cast<int8_t>(cl.side));
++            }
++            out.still_hidden_w = static_cast<float>(r.still_hidden_w);
++            out.rollouts = static_cast<uint16_t>(r.rollouts);
++            setp(out.yaw_target_p, r.yaw_target_p);
++            out.viewpoint_valid = r.viewpoint_valid;
++            setp(out.viewpoint_p, r.viewpoint_p);
++            out.classify_us = r.classify_us;
++            out.eval_us = r.eval_us;
++            loss_event_pub_->publish(out);
++
++            ++lo_.answered;
++            ++lo_.cls_count[r.cls & 3];
++            lo_.eval_us.push_back(r.eval_us);
++            lo_.classify_us.push_back(r.classify_us);
++            const double now = nh_->get_clock()->now().seconds();
++            if (lo_.last_log_t == 0.0) lo_.last_log_t = now;
++            if (now - lo_.last_log_t >= cfg_.loss_oracle_log_period_s && !lo_.eval_us.empty()) {
++                auto pct = [](std::vector<uint32_t> v, double q) {
++                    std::sort(v.begin(), v.end());
++                    return v[std::min(v.size() - 1, static_cast<size_t>(q * v.size()))];
++                };
++                fmt::print(" -- [LossOracle] {} events ({} occluded, {} unmapped, {} lost, {} out-of-view, {} no odom); "
++                           "classify p50 {} us p99 {} us; total p50 {} us p99 {} us; last {} {:.0f}% blocked\n",
++                           lo_.answered, lo_.cls_count[0], lo_.cls_count[1], lo_.cls_count[2], lo_.cls_count[3],
++                           lo_.skipped_no_odom, pct(lo_.classify_us, 0.5), pct(lo_.classify_us, 0.99),
++                           pct(lo_.eval_us, 0.5), pct(lo_.eval_us, 0.99), loss_oracle::className(r.cls),
++                           r.blocked_fraction * 100.0);
++                lo_.eval_us.clear();
++                lo_.classify_us.clear();
++                lo_.last_log_t = now;
++            }
++        }
++
+         // The point the heading should track under YAW_TO_TARGET (the followed human).
+         void yawTargetCallback(const geometry_msgs::msg::PointStamped::SharedPtr msg) {
+             setYawTarget(Vec3f{msg->point.x, msg->point.y, msg->point.z},
+@@ -415,6 +584,51 @@
+                 cout << YELLOW << " -- [Fsm] TARGET EXCLUSION on " << map_cfg.target_exclusion_topic << RESET << endl;
+             }
+ 
++            // M6.1 -- loss oracle. Reads the map, never writes it; publishes dtp_msgs/LossEvent.
++            if (cfg_.loss_oracle_en) {
++                loss_oracle::Params lp;
++                lp.camera_offset_body = cfg_.loss_oracle_camera_offset_body;
++                lp.camera_yaw_offset_deg = cfg_.loss_oracle_camera_yaw_offset_deg;
++                lp.fov_half_deg = cfg_.loss_oracle_fov_half_deg;
++                lp.fov_floor_deg = cfg_.loss_oracle_fov_floor_deg;
++                lp.cyl_radius = cfg_.loss_oracle_cyl_radius;
++                lp.sample_dz = cfg_.loss_oracle_sample_dz;
++                lp.lateral_n = cfg_.loss_oracle_lateral_n;
++                lp.r_excl = cfg_.loss_oracle_r_excl;
++                lp.rho_star = cfg_.loss_oracle_rho_star;
++                lp.ray_skip_start_m = cfg_.loss_oracle_ray_skip_start_m;
++                lp.edge_max_m = cfg_.loss_oracle_edge_max_m;
++                lp.edge_free_columns = cfg_.loss_oracle_edge_free_columns;
++                lp.rollouts = cfg_.loss_oracle_rollouts;
++                lp.horizon_s = cfg_.loss_oracle_horizon_s;
++                lp.step_s = cfg_.loss_oracle_step_s;
++                lp.sigma_v = cfg_.loss_oracle_sigma_v;
++                lp.sigma_omega = cfg_.loss_oracle_sigma_omega;
++                lp.sigma_heading = cfg_.loss_oracle_sigma_heading;
++                lp.standoff_near = cfg_.loss_oracle_standoff_near;
++                lp.standoff_far = cfg_.loss_oracle_standoff_far;
++                lp.min_standoff = cfg_.loss_oracle_min_standoff;
++                lp.viewpoint_height_offset = cfg_.loss_oracle_viewpoint_height_offset;
++                lp.viewpoint_z_min = cfg_.loss_oracle_viewpoint_z_min;
++                lp.viewpoint_z_max = cfg_.loss_oracle_viewpoint_z_max;
++                lp.trail_radius = cfg_.loss_oracle_trail_radius;
++                lp.trail_z_below = cfg_.loss_oracle_trail_z_below;
++                lp.trail_z_above = cfg_.loss_oracle_trail_z_above;
++                loss_oracle_ = std::make_shared<loss_oracle::LossOracle>(map_ptr_, lp);
++                loss_event_pub_ = nh_->create_publisher<dtp_msgs::msg::LossEvent>(cfg_.loss_oracle_event_topic, qos);
++                loss_oracle_cbk_group_ = nh_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
++                rclcpp::SubscriptionOptions so;
++                so.callback_group = loss_oracle_cbk_group_;
++                // BEST_EFFORT (qos above), same reason as the target filter: target_manager
++                // publishes best-effort and a RELIABLE subscription would never match.
++                loss_oracle_sub_ = nh_->create_subscription<dtp_msgs::msg::Target>(
++                        cfg_.loss_oracle_target_topic, qos,
++                        std::bind(&FsmRos2::lossOracleCallback, this, std::placeholders::_1), so);
++                cout << YELLOW << " -- [Fsm] LOSS ORACLE on " << cfg_.loss_oracle_target_topic
++                     << " -> " << cfg_.loss_oracle_event_topic << " (rho* " << lp.rho_star
++                     << ", " << lp.rollouts << " rollouts)" << RESET << endl;
++            }
++
+             // Upstream required EXACTLY one goal source. With a mux architecture (D10) more than one
+             // ingestion path is legitimate -- click for bench testing, follow for the DTP loop -- so
+             // this now only rejects the genuinely broken case of having none at all.
+diff --git a/super_planner/config/follow_test_ros2.yaml b/super_planner/config/follow_test_ros2.yaml
+--- a/super_planner/config/follow_test_ros2.yaml
++++ b/super_planner/config/follow_test_ros2.yaml
+@@ -236,3 +236,62 @@
+     # A velocity above this is treated as a bad estimate and the observation is ignored.
+     max_speed: 3.0
+ 
++# M6.1 (DTP) loss oracle (docs/m5-m6-plan.md SS5.0; drone-dtp/docs: docs/m6-loss-oracle.md).
++# Answers every COASTING /dtp/follow_target with a dtp_msgs/LossEvent on /planning/loss_event:
++# OCCLUDED / UNMAPPED / LOST / OUT_OF_VIEW, plus the reappearance belief and a pre-positioning
++# viewpoint. It only READS the map. Nothing acts on it unless target_manager / follow_planner run
++# with loss_conditioning:=true (the M6.5 arm). Starting values are the plan's SS2.4 table; M6.3
++# sweeps rho_star, lateral_n and r_excl.
++loss_oracle:
++  enable: true
++  target_topic: "/dtp/follow_target"
++  event_topic: "/planning/loss_event"
++  # Camera optical centre in the body (lidar_imu) frame: static_calib_tf's deployed
++  # lidar_imu -> camera_color_optical_frame translation (2026-09-13). Re-measure on a remount.
++  camera_offset_body: [0.084, 0.008, 0.067]
++  camera_yaw_offset_deg: 0.0
++  # = follow_planner's camera_fov_half_deg; the cone test for OUT_OF_VIEW.
++  fov_half_deg: 35.0
++  # The LiDAR's downward view limit (MID360: -7 deg). At range d the map knows nothing below
++  # z_sensor - d tan(7 deg), so sample heights under that are dropped, not read as unknown. An
++  # occluder is classifiable only where it rises above this plane at its range (loss_oracle.hpp).
++  fov_floor_deg: 7.0
++  # The target's bounding cylinder: rays go to lateral_n points across +-cyl_radius at each of
++  # the sample_dz heights about the reported (waist) point -> 15 rays.
++  cyl_radius: 0.25
++  sample_dz: [-0.5, 0.0, 0.4]
++  lateral_n: 5
++  # Rays stop this far short of the sample, so the person's own still-occupied cells are never
++  # the occluder. Must exceed target_exclusion/radius-ish person width when the filter is off.
++  r_excl: 0.4
++  # Blocked (or unknown) ray fraction at or above which the class is OCCLUDED (UNMAPPED).
++  rho_star: 0.5
++  # The first metres of every ray are skipped: the aircraft's own returns sit there.
++  ray_skip_start_m: 0.3
++  # Occluder extent sweep: stop after this many consecutive free columns, or this far.
++  edge_max_m: 4.0
++  edge_free_columns: 3
++  # Reappearance rollouts (CTRV samples about the target's velocity and turn rate).
++  rollouts: 32
++  horizon_s: 3.2
++  step_s: 0.1
++  sigma_v: 0.3
++  sigma_omega: 0.5
++  sigma_heading: 0.2
++  # Viewpoint reduction: follow_planner's annulus and floor, and its goal height offset/clamp.
++  standoff_near: 3.0
++  standoff_far: 4.0
++  min_standoff: 2.5
++  viewpoint_height_offset: 0.5
++  viewpoint_z_min: 0.5
++  viewpoint_z_max: 3.0
++  log_period_s: 5.0
++  # The target's own shadow (loss_oracle.hpp header): an UNKNOWN cell within trail_radius of
++  # where the person was SEEN in the last trail_window_s is treated as free, not as unmapped --
++  # it is unknown because they stood there (returns decaying, or the M5.3a filter masking the
++  # cylinder), and a walk straight away from the sensor otherwise reads UNMAPPED. OCCUPIED cells
++  # are never excused. Same radius and band as rog_map/target_exclusion.
++  trail_radius: 0.6
++  trail_z_below: 1.0
++  trail_z_above: 1.3
++  trail_window_s: 6.0

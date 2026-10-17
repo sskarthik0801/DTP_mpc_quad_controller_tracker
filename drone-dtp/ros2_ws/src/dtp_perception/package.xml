@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>dtp_perception</name>
+  <version>0.0.1</version>
+  <description>
+    Perception nodes for the SUPER human detect-track-predict-follow feature (dtp-imp branch):
+    camera-LiDAR fusion (fusion_node), the detect/track/range/predict brain wrapping
+    detection_pipeline.HumanXZPredictor.process_frame unchanged (perception_node), target
+    lock/re-ID/policy-inversion (target_manager, new -- no reference-repo equivalent), plus
+    calibration validation (lidar_overlay_node) and offline non-regression replay
+    (playback_node). See plan/dtp-imp/03 (reference reuse) and plan/dtp-imp/06 (Phase 1).
+  </description>
+  <maintainer email="srajule@purdue.edu">krishna</maintainer>
+  <license>Proprietary</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>tf2_geometry_msgs</exec_depend>
+  <exec_depend>message_filters</exec_depend>
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>dtp_msgs</exec_depend>
+  <!-- dtp_viz: MarkerArray is the only way to get our custom messages and state strings in
+       front of RViz. Runtime-only, like every other dependency of this pure-Python package. -->
+  <exec_depend>visualization_msgs</exec_depend>
+
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+  <depend>diagnostic_msgs</depend>
+</package>

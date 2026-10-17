@@ -1,0 +1,2 @@
+cycle,unix,boot_before_ms,boot_after_ms,disconnected,reset,note
+1,1789276456.5,167396,16396,0,1,FC RESET (boot 167396 -> 16396)

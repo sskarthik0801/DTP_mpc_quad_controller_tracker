@@ -1,0 +1,3 @@
+[WARN] [1789271002.418313403] [px4_odom_bridge]: guard state -> TRACKING reset_counter=0
+[ERROR] [1789271137.774904216] [px4_odom_bridge]: DIVERGED -- NOT forwarding odometry to PX4: no scan-matched pose for 59.5 s (stamp gap > max_gap_s 1.0): FAST-LIO integrated IMU alone across it. Resumes only on a restarted FAST-LIO (new lidar_init) that starts near the origin. Restart FAST-LIO where the aircraft is, on the ground.
+[WARN] [1789271193.930288791] [px4_odom_bridge]: guard state -> TRACKING reset_counter=1

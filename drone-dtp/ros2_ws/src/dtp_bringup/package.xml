@@ -1,0 +1,45 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>dtp_bringup</name>
+  <version>0.0.1</version>
+  <description>
+    Composes the human detect-track-predict-follow stack into launchable configurations:
+    sensors (Livox Mid-360 + Orbbec Gemini 336L), SUPER (FAST-LIO2 -&gt; ROG-Map -&gt; fsm_node)
+    and the follower (fusion, perception, target_manager, follow_planner, command_mux), plus
+    sensor_watchdog, which is started independently of the follower toggle because a NAV-only
+    flight still needs silent-stall detection. Also carries the launch-time gates for the two
+    configuration errors that break following invisibly: fsm/follow_goal_en left false, and a
+    stack split across wall and simulated time.
+  </description>
+  <maintainer email="srajule@purdue.edu">krishna</maintainer>
+  <license>Proprietary</license>
+
+  <!-- Layers this package launches. exec_depend rather than depend: nothing here is compiled
+       or linked against them, they only have to exist on the overlay at run time. -->
+  <exec_depend>dtp_perception</exec_depend>
+  <exec_depend>command_mux</exec_depend>
+  <exec_depend>follow_planner</exec_depend>
+  <exec_depend>super_planner</exec_depend>
+  <exec_depend>super_bringup</exec_depend>
+  <exec_depend>fast_lio</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+
+  <!-- livox_ros_driver2 and orbbec_camera are built in a SEPARATE overlay on this aircraft
+       (see ros2_ws/dtp_env_jetson.sh for both workspace layouts). Declaring them here would
+       make colcon fail the whole workspace when they are absent, which is the normal state on
+       a workstation with no sensors attached. sensors.launch.py resolves them at launch time
+       instead, and fails there with a message naming the missing package. -->
+
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

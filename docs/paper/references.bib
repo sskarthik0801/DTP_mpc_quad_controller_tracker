@@ -1,0 +1,618 @@
+%==============================================================================
+%  references.bib -- DRAFT, rebuilt 2026-09-10 from the annotated bibliography.
+%
+%  !!  VERIFICATION BURDEN, READ THIS  !!
+%  Three classes of entry here, and they need different treatment:
+%
+%   (A) Fields transcribed from the annotated bibliography -- authors/venues as
+%       supplied. Still worth a DBLP check, but the risk is low.
+%   (B) Marked % VERIFY -- fields I reconstructed from memory offline. Author
+%       lists, volumes and pages are the fields most likely to be wrong.
+%   (C) Marked % FILL AUTHORS -- the bibliography gave a title and venue but no
+%       author list, and I did not invent one. These WILL NOT render correctly
+%       until filled.
+%
+%  Also: every arXiv ID in the 2602--2605 range is a 2026 preprint whose venue
+%  may not be final. Confirm before citing any of them as ICRA/IROS/RA-L.
+%
+%  Priority reading order (from the bibliography):
+%    lin2026evatracker, bpod2023, shi2024sceneinformer, chib2024trajimpute,
+%    ji2022elastic, gao2024adaptive
+%==============================================================================
+
+%------------------------------------------------------------------------------
+% TIER 0 -- DIRECT COMPETITION
+%------------------------------------------------------------------------------
+
+@inproceedings{lin2026evatracker,
+  author    = {Lin, Yue and Liu, Yang and Wang, Dong and Lu, Huchuan},
+  title     = {{Eva-Tracker}: {ESDF}-Update-Free, Visibility-Aware Planning with
+               Target Reacquisition for Robust Aerial Tracking},
+  booktitle = {IEEE International Conference on Robotics and Automation (ICRA)},
+  year      = {2026},
+  note      = {arXiv:2602.12549. Code: \url{https://github.com/Yue-0/Eva-Tracker}}
+}
+
+@article{ren2025super,
+  author  = {Ren, Yunfan and Zhu, Fangcheng and Lu, Guozheng and Cai, Yixi and
+             Yin, Longji and Kong, Fanze and Xu, Wei and Zhang, Fu},
+  title   = {Safety-Assured High-Speed Navigation for Micro Aerial Vehicles},
+  journal = {Science Robotics},
+  year    = {2025},
+  note    = {Code: \url{https://github.com/hku-mars/SUPER}}
+}
+
+@inproceedings{ji2022elastic,
+  author    = {Ji, Jialin and Pan, Neng and Xu, Chao and Gao, Fei},
+  title     = {Elastic Tracker: A Spatio-Temporal Trajectory Planner for
+               Flexible Aerial Tracking},
+  booktitle = {IEEE International Conference on Robotics and Automation (ICRA)},
+  year      = {2022},
+  note      = {arXiv:2109.07111}
+}
+
+@inproceedings{wang2021visibility,
+  author    = {Wang, Qianhao and Gao, Yuman and Ji, Jialin and Xu, Chao and Gao, Fei},
+  title     = {Visibility-Aware Trajectory Optimization with Application to
+               Aerial Tracking},
+  booktitle = {IEEE/RSJ International Conference on Intelligent Robots and
+               Systems (IROS)},
+  year      = {2021},
+  note      = {arXiv:2103.06742}
+}
+
+%------------------------------------------------------------------------------
+% BUCKET 1 -- SUPER lineage / LiDAR MAV navigation substrate
+%------------------------------------------------------------------------------
+
+@inproceedings{ren2022bubble,
+  author    = {Ren, Yunfan and Liang, Siqi and Zhu, Fangcheng and Zhang, Guozheng
+               and Zhang, Fu},
+  title     = {Bubble Planner: Planning High-Speed Smooth Quadrotor Trajectories
+               Using Receding Corridors},
+  booktitle = {IEEE International Conference on Robotics and Automation (ICRA)},
+  year      = {2022}
+}   % VERIFY -- author list order/spelling
+
+@article{wang2022minco,
+  author  = {Wang, Zhepei and Zhou, Xin and Xu, Chao and Gao, Fei},
+  title   = {Geometrically Constrained Trajectory Optimization for Multicopters},
+  journal = {IEEE Transactions on Robotics},
+  volume  = {38}, number = {5}, pages = {3259--3278}, year = {2022}
+}   % VERIFY -- volume/pages
+
+@article{zhou2020egoplanner,
+  author  = {Zhou, Xin and Wang, Zhepei and Ye, Hongkai and Xu, Chao and Gao, Fei},
+  title   = {{EGO-Planner}: An {ESDF}-Free Gradient-Based Local Planner for Quadrotors},
+  journal = {IEEE Robotics and Automation Letters},
+  year    = {2020}
+}   % VERIFY -- volume/issue/pages
+
+@article{tordesillas2021faster,
+  author  = {Tordesillas, Jesus and Lopez, Brett T. and Everett, Michael and How, Jonathan P.},
+  title   = {{FASTER}: Fast and Safe Trajectory Planner for Navigation in
+             Unknown Environments},
+  journal = {IEEE Transactions on Robotics},
+  year    = {2021}
+}   % VERIFY
+
+@article{zhou2021raptor,
+  author  = {Zhou, Boyu and Pan, Jie and Gao, Fei and Shen, Shaojie},
+  title   = {{RAPTOR}: Robust and Perception-Aware Trajectory Replanning for
+             Quadrotor Fast Flight},
+  journal = {IEEE Transactions on Robotics},
+  year    = {2021}
+}   % VERIFY -- the bibliography lists Zhou, Wang, Zhu, Gao, Shen; check which
+
+@article{xu2022fastlio2,
+  author  = {Xu, Wei and Cai, Yixi and He, Dongjiao and Lin, Jiarong and Zhang, Fu},
+  title   = {{FAST-LIO2}: Fast Direct {LiDAR}-Inertial Odometry},
+  journal = {IEEE Transactions on Robotics},
+  volume  = {38}, number = {4}, pages = {2053--2073}, year = {2022}
+}
+
+@article{ren2023rogmap,
+  author  = {Ren, Yunfan and Cai, Yixi and Zhu, Fangcheng and Kong, Fanze and Zhang, Fu},
+  title   = {{ROG-Map}: An Efficient Robocentric Occupancy Grid Map for
+             Large-Scene and High-Resolution {LiDAR}-Based Motion Planning},
+  journal = {arXiv preprint arXiv:2302.14819},
+  year    = {2023}
+}
+
+@article{cai2021ikdtree,
+  author  = {Cai, Yixi and Xu, Wei and Zhang, Fu},
+  title   = {{ikd-Tree}: An Incremental {K-D} Tree for Robotic Applications},
+  journal = {arXiv preprint arXiv:2102.10808}, year = {2021}
+}
+
+@article{lidarmavsurvey2025,
+  author  = {{FILL AUTHORS}},
+  title   = {A Survey on {LiDAR}-Based Autonomous Aerial Vehicles},
+  journal = {arXiv preprint arXiv:2509.10730}, year = {2025}
+}   % FILL AUTHORS
+
+%------------------------------------------------------------------------------
+% BUCKET 2 -- Visibility-/occlusion-aware aerial tracking
+%------------------------------------------------------------------------------
+
+@inproceedings{han2021fasttracker,
+  author    = {Han, Zhichao and Zhang, Ruibin and Pan, Neng and Xu, Chao and Gao, Fei},
+  title     = {Fast-Tracker: A Robust Aerial System for Tracking Agile Target in
+               Cluttered Environments},
+  booktitle = {IEEE International Conference on Robotics and Automation (ICRA)},
+  year      = {2021}
+}
+
+@article{pan2021fasttracker2,
+  author  = {Pan, Neng and Zhang, Ruibin and Yang, Tiankai and Cui, Can and
+             Xu, Chao and Gao, Fei},
+  title   = {Fast-Tracker 2.0: Improving Autonomy of Aerial Tracking with Active
+             Vision and Human Location Regression},
+  journal = {IET Cyber-Systems and Robotics}, year = {2021},
+  note    = {Lower-tier venue, but the closest prior art on marker-free HUMAN
+             aerial tracking with occlusion awareness -- cite it}
+}
+
+@article{gao2024adaptive,
+  author  = {Gao, Yuman and Ji, Jialin and Wang, Qianhao and Jin, Rui and Lin, Yi
+             and Shang, Zhimeng and Cao, Yanjun and Shen, Shaojie and Xu, Chao
+             and Gao, Fei},
+  title   = {Adaptive Tracking and Perching for Quadrotor in Dynamic Scenarios},
+  journal = {IEEE Transactions on Robotics}, year = {2024}
+}
+
+@article{svpto2023,
+  author  = {{FILL AUTHORS}},
+  title   = {{SVPTO}: Safe Visibility-Guided Perception-Aware Trajectory
+             Optimization for Aerial Tracking},
+  journal = {IEEE Transactions on Industrial Electronics}, year = {2023}
+}   % FILL AUTHORS
+
+@article{bpod2023,
+  author  = {{FILL AUTHORS}},
+  title   = {Probabilistic Visibility-Aware Trajectory Planning for Target
+             Tracking in Cluttered Environments},
+  journal = {arXiv preprint arXiv:2306.06363}, year = {2023}
+}   % FILL AUTHORS -- belief-space probability of detection (BPOD). MUST CITE.
+
+@article{penin2018vision,
+  author  = {Penin, Bryan and Giordano, Paolo Robuffo and Chaumette, Fran\c{c}ois},
+  title   = {Vision-Based Reactive Planning for Aggressive Target Tracking While
+             Avoiding Collisions and Occlusions},
+  journal = {IEEE Robotics and Automation Letters}, year = {2018}
+}
+
+@article{masnavi2022visibility,
+  author  = {Masnavi, Houman and Shrestha, Jatan and Mishra, Mayank and
+             Sujit, P. B. and Kruusam\"{a}e, Karl and Singh, Arun Kumar},
+  title   = {Visibility-Aware Navigation with Batch Projection Augmented
+             Cross-Entropy Method over a Learned Occlusion Cost},
+  journal = {IEEE Robotics and Automation Letters}, year = {2022}
+}   % VERIFY -- author list
+
+@inproceedings{jeon2019online,
+  author    = {Jeon, Boseong and Kim, H. Jin},
+  title     = {Online Trajectory Generation of a {MAV} for Chasing a Moving
+               Target in {3D} Dense Environments},
+  booktitle = {IEEE/RSJ International Conference on Intelligent Robots and
+               Systems (IROS)}, year = {2019}
+}
+
+@inproceedings{jeon2020integrated,
+  author    = {Jeon, Boseong and Lee, Yunwoo and Kim, H. Jin},
+  title     = {Integrated Motion Planner for Real-Time Aerial Videography with a
+               Drone in a Dense Environment},
+  booktitle = {IEEE International Conference on Robotics and Automation (ICRA)},
+  year      = {2020}
+}
+
+@article{tordesillas2022panther,
+  author  = {Tordesillas, Jesus and How, Jonathan P.},
+  title   = {{PANTHER}: Perception-Aware Trajectory Planner in Dynamic Environments},
+  journal = {IEEE Access}, year = {2022}
+}
+
+@inproceedings{spasojevic2020perception,
+  author    = {Spasojevic, Igor and Murali, Varun and Karaman, Sertac},
+  title     = {Perception-Aware Time Optimal Path Parameterization for Quadrotors},
+  booktitle = {IEEE International Conference on Robotics and Automation (ICRA)},
+  year      = {2020}
+}
+
+@inproceedings{yin2023swarm,
+  author    = {Yin, Longji and Zhu, Fangcheng and Ren, Yunfan and Kong, Fanze and
+               Zhang, Fu},
+  title     = {Decentralized Swarm Trajectory Generation for {LiDAR}-Based Aerial
+               Tracking in Cluttered Environments},
+  booktitle = {IEEE/RSJ International Conference on Intelligent Robots and
+               Systems (IROS)}, year = {2023},
+  note      = {Uses a retroreflective-tape-marked target -- evidence for the
+               marker-free gap}
+}
+
+@article{coopswarm2025,
+  author  = {{FILL AUTHORS}},
+  title   = {Visibility-Aware Cooperative Aerial Tracking with Decentralized
+             {LiDAR}-Based Swarms},
+  journal = {arXiv preprint arXiv:2512.01280}, year = {2025}
+}   % FILL AUTHORS -- check for a 2026 venue
+
+@article{bpmptracker2024,
+  author  = {{FILL AUTHORS}},
+  title   = {{BPMP-Tracker}: A Versatile Aerial Target Tracker Using Bernstein
+             Polynomial Motion Primitives},
+  journal = {IEEE Robotics and Automation Letters}, year = {2024},
+  note    = {arXiv:2408.04266}
+}   % FILL AUTHORS
+
+@article{lee2024dmvc,
+  author  = {Lee, Yunwoo and Park, Jungwon and Kim, H. Jin},
+  title   = {{DMVC-Tracker}: Distributed Multi-Agent Trajectory Planning for
+             Target Tracking Using Dynamic Buffered Voronoi and
+             Inter-Visibility Cells},
+  journal = {arXiv preprint arXiv:2411.18086}, year = {2024}
+}   % VERIFY venue
+
+@article{intentionaware2023,
+  author  = {{FILL AUTHORS}},
+  title   = {Intention-Aware Planner for Robust and Safe Aerial Tracking},
+  journal = {arXiv preprint arXiv:2309.08854}, year = {2023}
+}   % FILL AUTHORS -- already names "no target intent model" as the field's gap
+
+@inproceedings{bonatti2018cinematographer,
+  author    = {Bonatti, Rogerio and Zhang, Yanfu and Choudhury, Sanjiban and
+               Wang, Wenshan and Scherer, Sebastian},
+  title     = {Autonomous Drone Cinematographer: Using Artistic Principles to
+               Create Smooth, Safe, Occlusion-Free Trajectories for Aerial Filming},
+  booktitle = {International Symposium on Experimental Robotics (ISER)}, year = {2018}
+}
+
+@article{naegeli2017videography,
+  author  = {N\"{a}geli, Tobias and Alonso-Mora, Javier and Domahidi, Alexander
+             and Rus, Daniela and Hilliges, Otmar},
+  title   = {Real-Time Motion Planning for Aerial Videography with Dynamic
+             Obstacle Avoidance and Viewpoint Optimization},
+  journal = {IEEE Robotics and Automation Letters}, year = {2017}
+}
+
+@article{stabletracker2025,
+  author  = {{FILL AUTHORS}},
+  title   = {{StableTracker}: Learning to Stably Track Target via Differentiable
+             Simulation},
+  journal = {arXiv preprint arXiv:2509.14147}, year = {2025}
+}   % FILL AUTHORS
+
+@article{wu2025uavsurvey,
+  author  = {{FILL AUTHORS -- Wu, Li, Xue: initials needed}},
+  title   = {{UAV} Target Tracking: A Survey},
+  journal = {Artificial Intelligence Review}, volume = {58}, number = {1}, year = {2025}
+}   % FILL AUTHORS
+
+@article{tracka2026,
+  author  = {{FILL AUTHORS}},
+  title   = {Track {A*}: Fast Visibility-Aware Trajectory Planning for Active
+             Target Tracking},
+  journal = {arXiv preprint arXiv:2605.05338}, year = {2026}
+}   % FILL AUTHORS -- useful for seeing how a 2026 paper frames this literature
+
+%------------------------------------------------------------------------------
+% BUCKET 3 -- Human trajectory prediction, with and without occlusion
+%------------------------------------------------------------------------------
+
+@inproceedings{bae2023eigentrajectory,
+  author    = {Bae, Inhwan and Oh, Jean and Jeon, Hae-Gon},
+  title     = {{EigenTrajectory}: Low-Rank Descriptors for Multi-Modal Trajectory
+               Forecasting},
+  booktitle = {IEEE/CVF International Conference on Computer Vision (ICCV)},
+  year      = {2023}
+}
+
+@inproceedings{bae2024singulartrajectory,
+  author    = {Bae, Inhwan and Jeon, Hae-Gon},
+  title     = {{SingularTrajectory}: Universal Trajectory Predictor Using
+               Diffusion Model},
+  booktitle = {IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  year      = {2024}
+}
+
+@inproceedings{salzmann2020trajectron,
+  author    = {Salzmann, Tim and Ivanovic, Boris and Chakravarty, Punarjay and
+               Pavone, Marco},
+  title     = {{Trajectron++}: Dynamically-Feasible Trajectory Forecasting with
+               Heterogeneous Data},
+  booktitle = {European Conference on Computer Vision (ECCV)}, year = {2020}
+}
+
+@inproceedings{alahi2016sociallstm,
+  author    = {Alahi, Alexandre and Goel, Kratarth and Ramanathan, Vignesh and
+               Robicquet, Alexandre and Fei-Fei, Li and Savarese, Silvio},
+  title     = {Social {LSTM}: Human Trajectory Prediction in Crowded Spaces},
+  booktitle = {IEEE Conference on Computer Vision and Pattern Recognition (CVPR)},
+  year      = {2016}
+}
+
+@inproceedings{gupta2018socialgan,
+  author    = {Gupta, Agrim and Johnson, Justin and Fei-Fei, Li and
+               Savarese, Silvio and Alahi, Alexandre},
+  title     = {Social {GAN}: Socially Acceptable Trajectories with Generative
+               Adversarial Networks},
+  booktitle = {IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  year      = {2018}
+}
+
+@article{rudenko2020survey,
+  author  = {Rudenko, Andrey and Palmieri, Luigi and Herman, Michael and
+             Kitani, Kris M. and Gavrila, Dariu M. and Arras, Kai O.},
+  title   = {Human Motion Trajectory Prediction: A Survey},
+  journal = {The International Journal of Robotics Research},
+  volume  = {39}, number = {8}, pages = {895--935}, year = {2020}
+}   % VERIFY -- volume/pages
+
+@inproceedings{mao2023led,
+  author    = {Mao, Weibo and Xu, Chenxin and Zhu, Qi and Chen, Siheng and Wang, Yanfeng},
+  title     = {Leapfrog Diffusion Model for Stochastic Trajectory Prediction},
+  booktitle = {IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  year      = {2023}
+}   % VERIFY -- author list
+
+@inproceedings{gu2022mid,
+  author    = {Gu, Tianpei and Chen, Guangyi and Li, Junlong and Lin, Chunze and
+               Rao, Yongming and Zhou, Jie and Lu, Jiwen},
+  title     = {Stochastic Trajectory Prediction via Motion Indeterminacy Diffusion},
+  booktitle = {IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  year      = {2022}
+}   % VERIFY
+
+% --- occlusion / missing-observation handling -------------------------------
+
+@inproceedings{chib2024trajimpute,
+  author    = {Chib, Pranav Singh and Singh, Pravendra},
+  title     = {{TrajImpute}: Pedestrian Trajectory Prediction with Missing Data
+               --- Datasets, Imputation, and Benchmarking},
+  booktitle = {Advances in Neural Information Processing Systems (NeurIPS),
+               Datasets and Benchmarks Track}, year = {2024},
+  note      = {arXiv:2411.00174. THE citation for "prediction assumes a complete
+               observation history". Gives an offline protocol needing no flight time.}
+}
+
+@inproceedings{xu2023uncovering,
+  author    = {Xu, Yi and Bazarjani, Armin and Chi, Hyung-gun and Choi, Chiho and Fu, Yun},
+  title     = {Uncovering the Missing Pattern: Unified Framework Towards
+               Trajectory Imputation and Prediction},
+  booktitle = {IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  year      = {2023}
+}
+
+@article{becker2021missformer,
+  author  = {Becker, Stefan and Hug, Ronny and H\"{u}bner, Wolfgang and
+             Arens, Michael and Morris, Brendan T.},
+  title   = {{MissFormer}: (In-)Attention-Based Handling of Missing Observations
+             for Trajectory Filtering and Prediction},
+  journal = {arXiv preprint arXiv:2106.16009}, year = {2021}
+}
+
+@inproceedings{shi2024sceneinformer,
+  author    = {Lange, Bernard and Li, Jiachen and Kochenderfer, Mykel J.},
+  title     = {Scene Informer: Anchor-Based Occlusion Inference and Trajectory
+               Prediction in Partially Observable Environments},
+  booktitle = {IEEE International Conference on Robotics and Automation (ICRA)},
+  year      = {2024}
+}   % VERIFY AUTHORS -- bibliography gave none; this is my reconstruction
+
+@inproceedings{schubert2008comparison,
+  author    = {Schubert, Robin and Richter, Eric and Wanielik, Gerd},
+  title     = {Comparison and Evaluation of Advanced Motion Models for Vehicle
+               Tracking},
+  booktitle = {International Conference on Information Fusion (FUSION)}, year = {2008}
+}
+
+%------------------------------------------------------------------------------
+% BUCKET 4 -- MOT and re-identification after occlusion
+%------------------------------------------------------------------------------
+
+@inproceedings{cao2023ocsort,
+  author    = {Cao, Jinkun and Pang, Jiangmiao and Weng, Xinshuo and
+               Khirodkar, Rawal and Kitani, Kris},
+  title     = {Observation-Centric {SORT}: Rethinking {SORT} for Robust
+               Multi-Object Tracking},
+  booktitle = {IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  year      = {2023},
+  note      = {Best citation for "counter-and-carry-forward is known to be inadequate"}
+}
+
+@inproceedings{zhang2022bytetrack,
+  author    = {Zhang, Yifu and Sun, Peize and Jiang, Yi and Yu, Dongdong and
+               Weng, Fucheng and Yuan, Zehuan and Luo, Ping and Liu, Wenyu and
+               Wang, Xinggang},
+  title     = {{ByteTrack}: Multi-Object Tracking by Associating Every Detection Box},
+  booktitle = {European Conference on Computer Vision (ECCV)}, year = {2022}
+}
+
+@inproceedings{wojke2017deepsort,
+  author    = {Wojke, Nicolai and Bewley, Alex and Paulus, Dietrich},
+  title     = {Simple Online and Realtime Tracking with a Deep Association Metric},
+  booktitle = {IEEE International Conference on Image Processing (ICIP)}, year = {2017}
+}
+
+@article{aharon2022botsort,
+  author  = {Aharon, Nir and Orfaig, Roy and Bobrovsky, Ben-Zion},
+  title   = {{BoT-SORT}: Robust Associations Multi-Pedestrian Tracking},
+  journal = {arXiv preprint arXiv:2206.14651}, year = {2022}
+}
+
+@article{instancelevel2026,
+  author  = {{FILL AUTHORS}},
+  title   = {Instance-Level Visual Active Tracking with Occlusion-Aware Planning},
+  journal = {arXiv preprint arXiv:2604.21453}, year = {2026},
+  note    = {The learned counterpart to our geometric approach -- diffusion policy
+             recovery trajectories trained in simulation}
+}   % FILL AUTHORS
+
+%------------------------------------------------------------------------------
+% BUCKET 5 -- Forests, canopy, search and rescue
+%------------------------------------------------------------------------------
+
+@article{schedl2021forest,
+  author  = {Schedl, David C. and Kurmi, Indrajit and Bimber, Oliver},
+  title   = {An Autonomous Drone for Search and Rescue in Forests Using Airborne
+             Optical Sectioning},
+  journal = {Science Robotics}, year = {2021},
+  note    = {Removes occlusion by sensor design; we reason about it by planning}
+}
+
+@article{loquercio2021highspeed,
+  author  = {Loquercio, Antonio and Kaufmann, Elia and Ranftl, Ren\'{e} and
+             M\"{u}ller, Matthias and Koltun, Vladlen and Scaramuzza, Davide},
+  title   = {Learning High-Speed Flight in the Wild},
+  journal = {Science Robotics}, volume = {6}, number = {59}, year = {2021}
+}
+
+@inproceedings{ross2013monocular,
+  author    = {Ross, St\'{e}phane and Melik-Barkhudarov, Narek and
+               Shankar, Kumar Shaurya and Wendel, Andreas and Dey, Debadeepta and
+               Bagnell, J. Andrew and Hebert, Martial},
+  title     = {Learning Monocular Reactive {UAV} Control in Cluttered Natural
+               Environments},
+  booktitle = {IEEE International Conference on Robotics and Automation (ICRA)},
+  year      = {2013}
+}
+
+@article{giusti2016trails,
+  author  = {Giusti, Alessandro and Guzzi, J\'{e}r\^{o}me and Cire\c{s}an, Dan C.
+             and He, Fang-Lin and Rodr\'{i}guez, Juan P. and Fontana, Flavio and
+             Faessler, Matthias and Forster, Christian and Schmidhuber, J\"{u}rgen
+             and Di Caro, Gianni and Scaramuzza, Davide and Gambardella, Luca M.},
+  title   = {A Machine Learning Approach to Visual Perception of Forest Trails
+             for Mobile Robots},
+  journal = {IEEE Robotics and Automation Letters}, year = {2016}
+}
+
+@article{chen2020sloam,
+  author  = {Chen, Steven W. and Nardari, Guilherme V. and Lee, Elijah S. and
+             Qu, Chao and Liu, Xu and Romero, Roseli A. F. and Kumar, Vijay},
+  title   = {{SLOAM}: Semantic {LiDAR} Odometry and Mapping for Forest Inventory},
+  journal = {IEEE Robotics and Automation Letters}, year = {2020},
+  note    = {Trunk-level semantics would strengthen occlusion classification --
+             consider seriously}
+}
+
+@article{boreal2025,
+  author  = {{FILL AUTHORS}},
+  title   = {Field Evaluation and Optimization of a Lightweight Autonomous
+             {LiDAR}-Based {UAV} System in Boreal Forest Environments},
+  journal = {arXiv preprint arXiv:2512.14340}, year = {2025},
+  note    = {Livox Mid-360 + PX4 in real boreal forest -- comparable platform}
+}   % FILL AUTHORS
+
+@article{canopy2026,
+  author  = {{FILL AUTHORS}},
+  title   = {Multimodal Object Detection Under Sparse Forest-Canopy Occlusion},
+  journal = {arXiv preprint arXiv:2605.15326}, year = {2026}
+}   % FILL AUTHORS
+
+%------------------------------------------------------------------------------
+% BUCKET 6 -- Reasoning about unobserved space
+%------------------------------------------------------------------------------
+
+@article{kurniawati2022pomdp,
+  author  = {Kurniawati, Hanna},
+  title   = {Partially Observable {M}arkov Decision Processes and Robotics},
+  journal = {Annual Review of Control, Robotics, and Autonomous Systems},
+  year    = {2022}, note = {arXiv:2209.10342}
+}
+
+@inproceedings{patil2014gaussian,
+  author    = {Patil, Sachin and Duan, Yan and Schulman, John and Goldberg, Ken
+               and Abbeel, Pieter},
+  title     = {Gaussian Belief Space Planning with Discontinuities in Sensing Domains},
+  booktitle = {IEEE International Conference on Robotics and Automation (ICRA)},
+  year      = {2014},
+  note      = {An occluding trunk IS a sensing-domain discontinuity -- theoretical
+               grounding for why naive Gaussian propagation through occlusion is wrong}
+}
+
+@inproceedings{ramakrishnan2020occupancy,
+  author    = {Ramakrishnan, Santhosh K. and Al-Halah, Ziad and Grauman, Kristen},
+  title     = {Occupancy Anticipation for Efficient Exploration and Navigation},
+  booktitle = {European Conference on Computer Vision (ECCV)}, year = {2020}
+}
+
+@inproceedings{georgakis2022uncertainty,
+  author    = {Georgakis, Georgios and Bucher, Bernadette and Arapin, Anton and
+               Schmeckpeper, Karl and Matni, Nikolai and Daniilidis, Kostas},
+  title     = {Uncertainty-Driven Planner for Exploration and Navigation},
+  booktitle = {IEEE International Conference on Robotics and Automation (ICRA)},
+  year      = {2022}
+}
+
+@inproceedings{wei2021inpainting,
+  author    = {Wei, Yuxiang and Lee, Kwangjin and Isler, Volkan and Lee, Daniel D.},
+  title     = {Occupancy Map Inpainting for Online Robot Navigation},
+  booktitle = {IEEE International Conference on Robotics and Automation (ICRA)},
+  year      = {2021}
+}   % VERIFY -- author list
+
+@article{oanbv2026,
+  author  = {{FILL AUTHORS}},
+  title   = {{OA-NBV}: Occlusion-Aware Next-Best-View Planning for Human-Centered
+             Active Perception on Mobile Robots},
+  journal = {arXiv preprint arXiv:2603.11072}, year = {2026},
+  note    = {Closest in spirit; differentiate on the temporal axis -- they pick a
+             viewpoint now, we predict where to be later}
+}   % FILL AUTHORS
+
+%------------------------------------------------------------------------------
+% SELF-CITATION / co-author prior work
+%------------------------------------------------------------------------------
+
+@inproceedings{bera2016glmp,
+  author    = {Bera, Aniket and Kim, Sujeong and Randhavane, Tanmay and
+               Pratapa, Srihari and Manocha, Dinesh},
+  title     = {{GLMP}: Realtime Pedestrian Path Prediction Using Global and Local
+               Movement Patterns},
+  booktitle = {IEEE International Conference on Robotics and Automation (ICRA)},
+  year      = {2016}
+}   % VERIFY -- and add further co-author prior work; placement is the authors' call
+
+%------------------------------------------------------------------------------
+% Platform / infrastructure
+%------------------------------------------------------------------------------
+
+@inproceedings{meier2015px4,
+  author    = {Meier, Lorenz and Honegger, Dominik and Pollefeys, Marc},
+  title     = {{PX4}: A Node-Based Multithreaded Open Source Robotics Framework
+               for Deeply Embedded Platforms},
+  booktitle = {IEEE International Conference on Robotics and Automation (ICRA)},
+  year      = {2015}
+}
+
+@article{macenski2022ros2,
+  author  = {Macenski, Steven and Foote, Tully and Gerkey, Brian and
+             Lalancette, Chris and Woodall, William},
+  title   = {Robot Operating System 2: Design, Architecture, and Uses in the Wild},
+  journal = {Science Robotics}, volume = {7}, number = {66}, year = {2022}
+}
+
+@inproceedings{koide2023calibration,
+  author    = {Koide, Kenji and Oishi, Shuji and Yokozuka, Masashi and Banno, Atsuhiko},
+  title     = {General, Single-Shot, Target-Less, and Automatic {LiDAR}-Camera
+               Extrinsic Calibration Toolbox},
+  booktitle = {IEEE International Conference on Robotics and Automation (ICRA)},
+  year      = {2023}
+}
+
+@inproceedings{sarlin2020superglue,
+  author    = {Sarlin, Paul-Edouard and DeTone, Daniel and Malisiewicz, Tomasz and
+               Rabinovich, Andrew},
+  title     = {{SuperGlue}: Learning Feature Matching with Graph Neural Networks},
+  booktitle = {IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  year      = {2020}
+}
+
+@misc{ultralytics,
+  author       = {Jocher, Glenn and Chaurasia, Ayush and Qiu, Jing},
+  title        = {Ultralytics {YOLO}},
+  howpublished = {\url{https://github.com/ultralytics/ultralytics}},
+  year         = {2023},
+  note         = {\tbd{version actually deployed}}
+}

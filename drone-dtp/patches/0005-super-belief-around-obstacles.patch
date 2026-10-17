@@ -1,0 +1,455 @@
+diff --git a/super_planner/include/super_core/loss_oracle.hpp b/super_planner/include/super_core/loss_oracle.hpp
+--- a/super_planner/include/super_core/loss_oracle.hpp
++++ b/super_planner/include/super_core/loss_oracle.hpp
+@@ -31,6 +31,44 @@
+  *      standoff annulus about that point with a free line of sight to it, at least min_standoff
+  *      from the hidden person's position and outside inflated occupancy, nearest the drone.
+  *
++ * M6.4b (docs/m6-belief-around-trees-plan.md), two switches, both OFF in code:
++ *   B  rollout_collision: the rollouts cannot walk through OCCUPIED cells. Each step is split
++ *      into sub-steps no longer than a cell; a position is blocked when the person's body
++ *      there -- sampled every half cell along the lateral diameter (+-rollout_body_radius) and
++ *      the forward radius, at every knowable height -- touches an OCCUPIED cell of the RAW grid
++ *      (inflation is sized for the drone, not a person; UNKNOWN is free -- the space behind a
++ *      trunk is unknown). Lines, not points: ROG-Map holds a trunk as a ONE-CELL shell of its
++ *      lit face, and the plan's five point probes 0.25 m apart straddled it on the bench gate
++ *      (O8: every rollout still walked through, 2026-09-14). The person's own cells are not
++ *      obstacles: an OCCUPIED probe within rollout_body_radius of a trail point is excused. A
++ *      blocked sub-step tries headings h +- k*deflect_step on the side of the rollout's own
++ *      turn first, up to deflect_max, and takes the first free one FOR THAT SUB-STEP ONLY: the
++ *      intended heading (h, integrating the drawn turn rate) is kept and tried again next
++ *      sub-step, so the rollout slides round the obstacle and resumes its course, like a
++ *      person does. (The plan had the deflected heading persist; on a trunk that turns a
++ *      -y walker into a permanent +-90 deg walker, which is not going round.) Nothing free
++ *      within +-deflect_max = stuck: the rollout stops and counts as hidden. No new random
++ *      draws, so with the switch off the belief is bit-for-bit today's, and on/off runs pair
++ *      per rollout. A start inside an obstacle (the CTRV forecast walked the person into the
++ *      trunk, i.e. exactly case B) is backed off along -h0 in half-cell steps up to
++ *      rollout_backoff_m; if nothing there is free the event's rollouts run without collision
++ *      and the caller logs it. A cluster mean that lands inside an obstacle (front-of-trunk and
++ *      back-of-trunk exits averaged) is replaced by the cluster's medoid; sigma and dt keep all
++ *      members. Without B the exit test's r_excl stop-short can record a re-emergence up to
++ *      0.4 m INSIDE an obstacle -- the ray stops before the near face and reads free.
++ *      WHAT B CANNOT DO: a trunk seen from one side is mapped only on that side; its back half
++ *      and its interior are UNKNOWN, and a rollout that gets round the lit face's edge walks
++ *      through them unopposed. B keeps the belief out of the MAPPED body of an obstacle, and
++ *      out of nothing the map has never seen.
++ *   B2 hidden_look: when the still-hidden mass is >= hidden_look_min_w, or there is no cluster
++ *      at all, yaw_target = the mean position at t = hidden_look_s of the rollouts that never
++ *      exited (a stuck one contributes where it stopped; the medoid rule applies), and the
++ *      viewpoint search runs about THAT point. The search already demands a clear camera ray
++ *      to its centre, min_standoff from the hidden person and inflated-free space, nearest the
++ *      drone: that is the sidestep to look behind the trunk. reappear_* are untouched (they
++ *      still describe real exits), and there is no message change: yaw_target_p == reappear_p[0]
++ *      exactly is the cluster branch, == query_p the none branch, anything else the look point.
++ *
+  * THE TARGET'S OWN SHADOW IS NOT "UNMAPPED". Found on the bench gate (loss_oracle_check.py O3):
+  * a person walking straight away from the sensor leaves a corridor of cells along the line of
+  * sight that are UNKNOWN -- either their own returns decaying out of OCCUPIED (a cell leaving
+@@ -137,6 +175,18 @@
+         double trail_radius{0.6};
+         double trail_z_below{1.0};
+         double trail_z_above{1.3};
++
++        // M6.4b (B): rollouts that walk around OCCUPIED cells. Off in code, on in the follow
++        // config, so the paper can ablate it.
++        bool rollout_collision{false};
++        double rollout_body_radius{0.25};    // person half-width: the probes, and the own-cell excuse
++        double rollout_deflect_step_deg{15.0};
++        double rollout_deflect_max_deg{90.0};
++        double rollout_backoff_m{1.0};
++        // M6.4b (B2): look behind the occluder when the rollouts mostly stay hidden.
++        bool hidden_look{false};
++        double hidden_look_min_w{0.5};
++        double hidden_look_s{1.5};
+     };
+ 
+     struct Cluster {
+@@ -167,6 +217,13 @@
+         bool viewpoint_valid{false};
+         Vec3f viewpoint_p{Vec3f::Zero()};
+         uint32_t classify_us{0}, eval_us{0};
++        // M6.4b diagnostics (not in the message; fsm_ros2 logs them).
++        int stuck{0};                        // B: rollouts that found no free heading
++        double start_backoff_m{0.0};         // B: how far the start was moved out of an obstacle
++        bool start_unresolved{false};        // B: start inside an obstacle, nothing free within
++                                             //    rollout_backoff_m -> this event ran without collision
++        bool look_used{false};               // B2: yaw_target_p is the look point
++        double look_t{0.0};                  // B2: the rollout time the look point was taken at
+     };
+ 
+     class LossOracle {
+@@ -185,6 +242,11 @@
+             if (p_.step_s <= 0.0) p_.step_s = 0.1;
+             if (p_.camera_offset_body.size() != 3) p_.camera_offset_body = {0.0, 0.0, 0.0};
+             if (p_.sample_dz.empty()) p_.sample_dz = {0.0};
++            if (p_.rollout_body_radius < 0.0) p_.rollout_body_radius = 0.0;
++            if (p_.rollout_deflect_step_deg < 1.0) p_.rollout_deflect_step_deg = 1.0;
++            if (p_.rollout_deflect_max_deg < p_.rollout_deflect_step_deg) p_.rollout_deflect_max_deg = p_.rollout_deflect_step_deg;
++            if (p_.rollout_backoff_m < 0.0) p_.rollout_backoff_m = 0.0;
++            if (p_.hidden_look_s <= 0.0) p_.hidden_look_s = p_.step_s;
+         }
+ 
+         const Params &params() const { return p_; }
+@@ -364,27 +426,108 @@
+             std::vector<Exit> exits;
+             exits.reserve(p_.rollouts);
+             int hidden = 0;
++
++            // M6.4b (B). The start may itself be inside an obstacle: the CTRV forecast walked the
++            // person into it. Back off along -h0 until the body fits; if nothing within
++            // rollout_backoff_m is free, this event's rollouts run without collision (logged).
++            bool coll = p_.rollout_collision;
++            Vec3f start = target_p;
++            if (coll && stepBlocked(start, h0, heights)) {
++                const Vec3f back(-std::cos(h0), -std::sin(h0), 0.0);
++                const double ds = 0.5 * res_;
++                const int nb = static_cast<int>(std::ceil(p_.rollout_backoff_m / ds));
++                bool ok = false;
++                for (int i = 1; i <= nb; ++i) {
++                    const Vec3f q = target_p + back * (i * ds);
++                    if (!stepBlocked(q, h0, heights)) {
++                        start = q;
++                        r.start_backoff_m = i * ds;
++                        ok = true;
++                        break;
++                    }
++                }
++                if (!ok) {
++                    coll = false;
++                    r.start_unresolved = true;
++                }
++            }
++            const double dh = p_.rollout_deflect_step_deg * M_PI / 180.0;
++            const int k_defl = std::max(1, static_cast<int>(std::ceil(p_.rollout_deflect_max_deg / p_.rollout_deflect_step_deg)));
++            // M6.4b (B2): where each never-exiting rollout is at t = hidden_look_s.
++            const int i_look = std::max(1, std::min(n_steps, static_cast<int>(std::lround(
++                    std::min(p_.hidden_look_s, p_.horizon_s) / p_.step_s))));
++            std::vector<Vec3f> hidden_at_look;
++            if (p_.hidden_look) hidden_at_look.reserve(p_.rollouts);
++
+             for (int k = 0; k < p_.rollouts; ++k) {
++                // Three draws per rollout, in this order, whatever the switches: the draw order is
++                // the pairing between arms.
+                 const double s = std::max(0.0, s0 + p_.sigma_v * g(rng));
+                 const double w = w0 + p_.sigma_omega * g(rng);
+                 double h = h0 + p_.sigma_heading * g(rng);
+-                Vec3f p = target_p;
+-                bool out = false;
++                Vec3f p = start;
++                Vec3f p_look = start;
++                bool out = false, stuck = false, reached_look = false;
+                 for (int i = 1; i <= n_steps; ++i) {
+                     h += w * p_.step_s;
+-                    p.x() += s * p_.step_s * std::cos(h);
+-                    p.y() += s * p_.step_s * std::sin(h);
++                    if (!coll) {
++                        p.x() += s * p_.step_s * std::cos(h);
++                        p.y() += s * p_.step_s * std::sin(h);
++                    } else {
++                        // Sub-steps no longer than a cell, so a one-cell pole cannot be jumped.
++                        const double len = s * p_.step_s;
++                        const int n_sub = std::max(1, static_cast<int>(std::ceil(len / res_)));
++                        const double dl = len / n_sub;
++                        for (int j = 0; j < n_sub; ++j) {
++                            const Vec3f q(p.x() + dl * std::cos(h), p.y() + dl * std::sin(h), p.z());
++                            if (!stepBlocked(q, h, heights)) {
++                                p = q;
++                                continue;
++                            }
++                            // Deflect THIS sub-step: the rollout's own turn direction first, then
++                            // the other, widening by deflect_step until deflect_max. The intended
++                            // heading h is kept -- next sub-step tries it again, so the rollout
++                            // slides round the obstacle and resumes its course.
++                            const double sgn = (w < 0.0) ? -1.0 : 1.0;
++                            bool freed = false;
++                            for (int kk = 1; kk <= k_defl && !freed; ++kk) {
++                                for (int side = 0; side < 2 && !freed; ++side) {
++                                    const double hh = h + (side == 0 ? sgn : -sgn) * kk * dh;
++                                    const Vec3f qq(p.x() + dl * std::cos(hh), p.y() + dl * std::sin(hh), p.z());
++                                    if (!stepBlocked(qq, hh, heights)) {
++                                        p = qq;
++                                        freed = true;
++                                    }
++                                }
++                            }
++                            if (!freed) {
++                                stuck = true;
++                                break;
++                            }
++                        }
++                    }
++                    if (i == i_look) {
++                        p_look = p;
++                        reached_look = true;
++                    }
+                     const double th = wrapPi(std::atan2(p.y() - c.y(), p.x() - c.x()) - occ_bearing);
+                     const bool outside = (th > th_left) || (th < -th_right);
+-                    if (!outside) continue;
+-                    Vec3f look = p;
+-                    look.z() = heights.back();          // the map's knowable band, not the waist
+-                    if (castRay(c, look, p_.r_excl, nullptr) == RAY_OCC) continue;
+-                    exits.push_back({p, i * p_.step_s, th > 0.0 ? +1 : -1});
+-                    out = true;
+-                    break;
++                    if (outside) {
++                        Vec3f look = p;
++                        look.z() = heights.back();          // the map's knowable band, not the waist
++                        if (castRay(c, look, p_.r_excl, nullptr) != RAY_OCC) {
++                            exits.push_back({p, i * p_.step_s, th > 0.0 ? +1 : -1});
++                            out = true;
++                            break;
++                        }
++                    }
++                    if (stuck) break;                       // stopped here; hidden unless it just exited
++                }
++                if (!out) {
++                    ++hidden;
++                    if (p_.hidden_look) hidden_at_look.push_back(reached_look ? p_look : p);
+                 }
+-                if (!out) ++hidden;
++                if (stuck && !out) ++r.stuck;
+             }
+             r.rollouts = p_.rollouts;
+             r.still_hidden_w = static_cast<double>(hidden) / p_.rollouts;
+@@ -406,6 +549,16 @@
+                 cl.dt_min = ts.front();
+                 cl.dt_max = ts.back();
+                 cl.dt_med = ts[ts.size() / 2];
++                if (coll && pointBlocked(mean, heights)) {
++                    // B: exits round the front and round the back of a trunk average to a point
++                    // inside it. Report the member nearest that mean instead (the medoid);
++                    // sigma and dt above already include every member.
++                    double best = 1e18;
++                    for (const auto *e : members) {
++                        const double d = (e->p - mean).head<2>().squaredNorm();
++                        if (d < best) { best = d; mean = e->p; }
++                    }
++                }
+                 cl.mean = mean;
+                 r.clusters.push_back(cl);
+             }
+@@ -415,8 +568,26 @@
+                 r.yaw_target_p = r.clusters.front().mean;
+             }
+ 
++            // ---- M6.4b (B2): look behind the occluder ------------------------------------
++            if (p_.hidden_look && !hidden_at_look.empty() &&
++                (r.clusters.empty() || r.still_hidden_w >= p_.hidden_look_min_w)) {
++                Vec3f look = Vec3f::Zero();
++                for (const auto &q : hidden_at_look) look += q;
++                look /= static_cast<double>(hidden_at_look.size());
++                if (coll && pointBlocked(look, heights)) {
++                    double best = 1e18;
++                    for (const auto &q : hidden_at_look) {
++                        const double d = (q - look).head<2>().squaredNorm();
++                        if (d < best) { best = d; look = q; }
++                    }
++                }
++                r.yaw_target_p = look;
++                r.look_used = true;
++                r.look_t = i_look * p_.step_s;
++            }
++
+             // ---- viewpoint ---------------------------------------------------------------
+-            if (!r.clusters.empty()) {
++            if (!r.clusters.empty() || r.look_used) {
+                 const Vec3f centre = r.yaw_target_p;
+                 const double radii[3] = {p_.standoff_near, 0.5 * (p_.standoff_near + p_.standoff_far),
+                                          p_.standoff_far};
+@@ -477,16 +648,56 @@
+             return RAY_FREE;
+         }
+ 
+-        bool onTrail(const Vec3f &pt) const {
++        bool onTrail(const Vec3f &pt, double radius) const {
+             if (trail_ == nullptr) return false;
+             for (const auto &q : *trail_) {
+                 const double dz = pt.z() - q.z();
+                 if (dz < -p_.trail_z_below || dz > p_.trail_z_above) continue;
+-                if (std::hypot(pt.x() - q.x(), pt.y() - q.y()) <= p_.trail_radius) return true;
++                if (std::hypot(pt.x() - q.x(), pt.y() - q.y()) <= radius) return true;
+             }
+             return false;
+         }
+ 
++        bool onTrail(const Vec3f &pt) const { return onTrail(pt, p_.trail_radius); }
++
++        // M6.4b (B). An OCCUPIED cell in the RAW grid that is not the person's own (within
++        // rollout_body_radius of where they were seen). UNKNOWN and OUT_OF_MAP are free here.
++        bool hardOccupied(const Vec3f &q) const {
++            if (map_->getGridType(q) != GridType::OCCUPIED) return false;
++            return !onTrail(q, p_.rollout_body_radius);
++        }
++
++        // Any hard-occupied cell on the segment a..b (sampled every half cell, so a one-cell
++        // shell crossed at any angle is never straddled), at any of the knowable heights.
++        bool segmentBlocked(const Vec3f &a, const Vec3f &b, const std::vector<double> &heights) const {
++            const double len = (b - a).head<2>().norm();
++            const int n = std::max(1, static_cast<int>(std::ceil(len / (0.5 * res_))));
++            for (int i = 0; i <= n; ++i) {
++                Vec3f q = a + (b - a) * (static_cast<double>(i) / n);
++                for (const double z : heights) {
++                    q.z() = z;
++                    if (hardOccupied(q)) return true;
++                }
++            }
++            return false;
++        }
++
++        // A person at p heading h cannot be here: their lateral diameter or the body radius
++        // ahead of them touches a hard-occupied cell.
++        bool stepBlocked(const Vec3f &p, double h, const std::vector<double> &heights) const {
++            const double rb = p_.rollout_body_radius;
++            const Vec3f f(std::cos(h), std::sin(h), 0.0), l(-std::sin(h), std::cos(h), 0.0);
++            return segmentBlocked(p - l * rb, p + l * rb, heights) || segmentBlocked(p, p + f * rb, heights);
++        }
++
++        // Heading-free version for a point (a cluster mean, the look point): the two axis-aligned
++        // diameters.
++        bool pointBlocked(const Vec3f &p, const std::vector<double> &heights) const {
++            const double rb = p_.rollout_body_radius;
++            return segmentBlocked(p - Vec3f(rb, 0, 0), p + Vec3f(rb, 0, 0), heights) ||
++                   segmentBlocked(p - Vec3f(0, rb, 0), p + Vec3f(0, rb, 0), heights);
++        }
++
+         static double wrapPi(double a) {
+             while (a > M_PI) a -= 2.0 * M_PI;
+             while (a < -M_PI) a += 2.0 * M_PI;
+diff --git a/super_planner/include/fsm/config.hpp b/super_planner/include/fsm/config.hpp
+--- a/super_planner/include/fsm/config.hpp
++++ b/super_planner/include/fsm/config.hpp
+@@ -71,6 +71,12 @@
+                 loss_oracle_viewpoint_z_max{}, loss_oracle_log_period_s{}, loss_oracle_trail_radius{},
+                 loss_oracle_trail_z_below{}, loss_oracle_trail_z_above{}, loss_oracle_trail_window_s{};
+         int loss_oracle_lateral_n{}, loss_oracle_edge_free_columns{}, loss_oracle_rollouts{};
++        // M6.4b (DTP). B: rollouts walk around OCCUPIED cells; B2: look behind the occluder when
++        // the rollouts mostly stay hidden. Both default OFF; see docs/m6-belief-around-trees-plan.md.
++        bool loss_oracle_rollout_collision{false}, loss_oracle_hidden_look{false};
++        double loss_oracle_rollout_body_radius{}, loss_oracle_rollout_deflect_step_deg{},
++                loss_oracle_rollout_deflect_max_deg{}, loss_oracle_rollout_backoff_m{},
++                loss_oracle_hidden_look_min_w{}, loss_oracle_hidden_look_s{};
+ 
+         Config() = default;
+ 
+@@ -126,6 +132,15 @@
+             loader.LoadParam("loss_oracle/trail_z_below", loss_oracle_trail_z_below, 1.0);
+             loader.LoadParam("loss_oracle/trail_z_above", loss_oracle_trail_z_above, 1.3);
+             loader.LoadParam("loss_oracle/trail_window_s", loss_oracle_trail_window_s, 6.0);
++            // M6.4b -- B (rollout collision) and B2 (hidden look).
++            loader.LoadParam("loss_oracle/rollout_collision", loss_oracle_rollout_collision, false);
++            loader.LoadParam("loss_oracle/rollout_body_radius", loss_oracle_rollout_body_radius, 0.25);
++            loader.LoadParam("loss_oracle/rollout_deflect_step_deg", loss_oracle_rollout_deflect_step_deg, 15.0);
++            loader.LoadParam("loss_oracle/rollout_deflect_max_deg", loss_oracle_rollout_deflect_max_deg, 90.0);
++            loader.LoadParam("loss_oracle/rollout_backoff_m", loss_oracle_rollout_backoff_m, 1.0);
++            loader.LoadParam("loss_oracle/hidden_look", loss_oracle_hidden_look, false);
++            loader.LoadParam("loss_oracle/hidden_look_min_w", loss_oracle_hidden_look_min_w, 0.5);
++            loader.LoadParam("loss_oracle/hidden_look_s", loss_oracle_hidden_look_s, 1.5);
+ 
+ 
+             loader.LoadParam("super_planner/yaw_dot_max", yaw_dot_max, 1.0, true);
+diff --git a/super_planner/include/ros_interface/ros2/fsm_ros2.hpp b/super_planner/include/ros_interface/ros2/fsm_ros2.hpp
+--- a/super_planner/include/ros_interface/ros2/fsm_ros2.hpp
++++ b/super_planner/include/ros_interface/ros2/fsm_ros2.hpp
+@@ -74,6 +74,10 @@
+             long cls_count[4]{0, 0, 0, 0};
+             std::vector<uint32_t> eval_us, classify_us;
+             double last_log_t{0.0};
++            // M6.4b counters for the periodic line: B start back-offs / unresolved starts, stuck
++            // rollouts; B2 look-point reductions.
++            long backoffs{0}, unresolved{0}, stuck{0}, look_used{0};
++            double last_backoff_log_t{-1e9};
+             // The locked target's recent SEEN positions (stamp seconds, position): the shadow
+             // rule in loss_oracle.hpp. Cleared when the track changes.
+             std::deque<std::pair<double, Vec3f>> trail;
+@@ -449,6 +453,27 @@
+                 }
+             }
+ 
++            // M6.4b (B): the coasted point itself was inside an obstacle. Say so, at most once a
++            // second -- the harness (loss_oracle_check.py O8b) greps for "backed off".
++            if (r.start_backoff_m > 0.0 || r.start_unresolved) {
++                if (r.start_unresolved) ++lo_.unresolved; else ++lo_.backoffs;
++                const double now_s = nh_->get_clock()->now().seconds();
++                if (now_s - lo_.last_backoff_log_t > 1.0) {
++                    lo_.last_backoff_log_t = now_s;
++                    if (r.start_unresolved) {
++                        fmt::print(fg(fmt::color::orange),
++                                   " -- [LossOracle] rollout start ({:.2f}, {:.2f}) is inside an obstacle and no free "
++                                   "point lies within {:.2f} m behind it: this event's rollouts ran WITHOUT collision\n",
++                                   target_p.x(), target_p.y(), cfg_.loss_oracle_rollout_backoff_m);
++                    } else {
++                        fmt::print(" -- [LossOracle] rollout start ({:.2f}, {:.2f}) is inside an obstacle: backed off "
++                                   "{:.2f} m along -heading\n", target_p.x(), target_p.y(), r.start_backoff_m);
++                    }
++                }
++            }
++            lo_.stuck += r.stuck;
++            if (r.look_used) ++lo_.look_used;
++
+             dtp_msgs::msg::LossEvent out;
+             out.header.stamp = msg->header.stamp;
+             out.header.frame_id = msg->header.frame_id;
+@@ -501,11 +526,12 @@
+                     return v[std::min(v.size() - 1, static_cast<size_t>(q * v.size()))];
+                 };
+                 fmt::print(" -- [LossOracle] {} events ({} occluded, {} unmapped, {} lost, {} out-of-view, {} no odom); "
+-                           "classify p50 {} us p99 {} us; total p50 {} us p99 {} us; last {} {:.0f}% blocked\n",
++                           "classify p50 {} us p99 {} us; total p50 {} us p99 {} us; last {} {:.0f}% blocked; "
++                           "B: {} back-offs {} unresolved {} stuck rollouts; B2: {} look-behind\n",
+                            lo_.answered, lo_.cls_count[0], lo_.cls_count[1], lo_.cls_count[2], lo_.cls_count[3],
+                            lo_.skipped_no_odom, pct(lo_.classify_us, 0.5), pct(lo_.classify_us, 0.99),
+                            pct(lo_.eval_us, 0.5), pct(lo_.eval_us, 0.99), loss_oracle::className(r.cls),
+-                           r.blocked_fraction * 100.0);
++                           r.blocked_fraction * 100.0, lo_.backoffs, lo_.unresolved, lo_.stuck, lo_.look_used);
+                 lo_.eval_us.clear();
+                 lo_.classify_us.clear();
+                 lo_.last_log_t = now;
+@@ -614,6 +640,14 @@
+                 lp.trail_radius = cfg_.loss_oracle_trail_radius;
+                 lp.trail_z_below = cfg_.loss_oracle_trail_z_below;
+                 lp.trail_z_above = cfg_.loss_oracle_trail_z_above;
++                lp.rollout_collision = cfg_.loss_oracle_rollout_collision;
++                lp.rollout_body_radius = cfg_.loss_oracle_rollout_body_radius;
++                lp.rollout_deflect_step_deg = cfg_.loss_oracle_rollout_deflect_step_deg;
++                lp.rollout_deflect_max_deg = cfg_.loss_oracle_rollout_deflect_max_deg;
++                lp.rollout_backoff_m = cfg_.loss_oracle_rollout_backoff_m;
++                lp.hidden_look = cfg_.loss_oracle_hidden_look;
++                lp.hidden_look_min_w = cfg_.loss_oracle_hidden_look_min_w;
++                lp.hidden_look_s = cfg_.loss_oracle_hidden_look_s;
+                 loss_oracle_ = std::make_shared<loss_oracle::LossOracle>(map_ptr_, lp);
+                 loss_event_pub_ = nh_->create_publisher<dtp_msgs::msg::LossEvent>(cfg_.loss_oracle_event_topic, qos);
+                 loss_oracle_cbk_group_ = nh_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+diff --git a/super_planner/config/follow_test_ros2.yaml b/super_planner/config/follow_test_ros2.yaml
+--- a/super_planner/config/follow_test_ros2.yaml
++++ b/super_planner/config/follow_test_ros2.yaml
+@@ -295,3 +295,29 @@
+   trail_z_below: 1.0
+   trail_z_above: 1.3
+   trail_window_s: 6.0
++  # M6.4b (docs/m6-belief-around-trees-plan.md). Both OFF in code; ON here so the follower's
++  # belief walks round trunks. Each is its own ablation switch for the paper.
++  # B: rollouts cannot walk through OCCUPIED cells (raw grid, not inflated -- a person is not the
++  # drone). Steps are split into sub-steps no longer than a cell; a blocked sub-step tries
++  # headings +-k*deflect_step (own turn side first) up to deflect_max, else the rollout is stuck
++  # (hidden). The person's own cells within rollout_body_radius of the trail are not obstacles.
++  # A start inside an obstacle is backed off along -heading by up to rollout_backoff_m. No new
++  # random draws: OFF reproduces the pre-0005 belief bit for bit.
++  rollout_collision: true
++  rollout_body_radius: 0.25
++  rollout_deflect_step_deg: 15.0
++  rollout_deflect_max_deg: 90.0
++  rollout_backoff_m: 1.0
++  # B2: when the still-hidden mass is >= hidden_look_min_w (or no rollout exits), the yaw target
++  # and the viewpoint search's centre become the hidden rollouts' mean position at hidden_look_s
++  # -- a viewpoint with a clear ray to it IS the sidestep to look behind the trunk. reappear_*
++  # are untouched. min_w 0.5 = the hidden mass is the majority. Measured on the bench gate
++  # 2026-09-14 (loss_oracle_check.py, pre-0005 binary): still_hidden_w <= 0.09 when the person
++  # walks out from behind a 0.4 m tube (O1); 0.31-0.59 straight behind a 0.6 m trunk at 1 m/s
++  # (does not fire, and the cluster viewpoint already looks behind it); 0.62-0.84 behind a 1 m
++  # trunk at 0.7 m/s (O9, fires). It has no hysteresis: an event stream straddling min_w
++  # alternates between the cluster mean and the look point. hidden_look_s 1.5 = half the
++  # horizon, where the shadow is still narrow enough to see round from the annulus.
++  hidden_look: true
++  hidden_look_min_w: 0.5
++  hidden_look_s: 1.5

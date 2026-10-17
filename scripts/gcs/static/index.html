@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#070b0a">
+<title>SUPER GCS</title>
+<!-- Local copies, not Google: there is no internet at the flying field. -->
+<link rel="preload" href="/static/inter.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/static/jakarta.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🚁</text></svg>">
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <span id="link-dot" class="dot"></span>
+    <b>SUPER GCS</b>
+    <span class="host" id="host">connecting…</span>
+  </div>
+  <div class="row">
+    <button id="admin-btn" class="ghost small">Admin control</button>
+    <button id="stop-all" class="danger">STOP ALL</button>
+  </div>
+</header>
+
+<div id="banner" class="banner" hidden></div>
+
+<!-- Shown only when the API rejects us. The point of a memorable hostname is
+     that you TYPE it, and typing it drops the ?k=… — so a dead red banner is
+     the wrong answer here; one paste, remembered, is the right one. -->
+<section id="tokengate" class="card gate" hidden>
+  <h2>Access token needed</h2>
+  <p class="note" id="gate-why"></p>
+  <div class="cmdrow">
+    <input id="token-input" type="text" spellcheck="false" autocomplete="off"
+           placeholder="paste the token here">
+    <button id="token-save">Unlock</button>
+  </div>
+  <p class="note">It is printed by <code>bash scripts/gcs.sh</code> at startup,
+    and stored on the Jetson in <code>~/.cache/super-gcs/token</code>. This
+    browser remembers it, so you only paste it once — after that
+    <code>http://gypsy.local:8080</code> is enough on its own.</p>
+</section>
+
+<!-- Restricted panels sit behind a second password. Nothing here names what
+     they are: this markup is served to a LOCKED client, so a heading or a
+     placeholder that announced the feature would hand back exactly what the
+     gate withholds. The server withholds the rest -- with no admin session,
+     /api/state and /api/config carry none of the restricted data at all, so
+     the page has nothing to hide. -->
+<section id="admingate" class="card gate" hidden>
+  <h2>Admin control</h2>
+  <p class="note" id="admin-why"></p>
+  <div class="cmdrow">
+    <input id="admin-input" type="password" spellcheck="false"
+           autocomplete="current-password" placeholder="password">
+    <button id="admin-save">Unlock</button>
+    <button id="admin-cancel" class="ghost">Cancel</button>
+  </div>
+  <p class="note">Separate from the dashboard token, and narrower: the token
+    says you may fly this aircraft, this says you may use the restricted
+    panels. It is remembered for this <em>browser tab only</em> and is
+    forgotten when the tab closes, when the GCS restarts, or after 30 minutes
+    with the tab in the background. Change it with
+    <code>python3 scripts/gcs/admin.py --set</code>.</p>
+</section>
+
+<main>
+
+  <section class="card span2">
+    <h2>Aircraft</h2>
+    <div class="hero">
+      <div class="hero-main">
+        <div class="big" id="mode">—</div>
+        <div class="sub" id="mode-sub">no telemetry</div>
+      </div>
+      <div class="badges" id="ac-badges"></div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <!-- Starts disabled: it stays that way until a poll has proved the
+           vehicle is disarmed and on the ground. The server refuses anyway
+           (reboot_blocked()), but a button you can press and that then says no
+           reads as a broken page. -->
+      <button id="fc-reboot" class="caution small" disabled>Reboot FC</button>
+      <span class="note" id="fc-reboot-note" style="margin:0">checking…</span>
+    </div>
+  </section>
+
+  <section class="card span2">
+    <h2>Battery</h2>
+    <div class="hero">
+      <div class="hero-main">
+        <div class="big" id="volt">—</div>
+        <div class="sub" id="batt-sub">waiting…</div>
+      </div>
+      <div class="meter"><div class="meter-fill" id="batt-bar"></div></div>
+    </div>
+    <dl class="kv" id="batt-kv"></dl>
+  </section>
+
+  <section class="card span2">
+    <h2>Estimator <span class="hint">EKF2 position aiding</span></h2>
+    <div class="badges" id="est-badges"></div>
+    <dl class="kv" id="est-kv"></dl>
+  </section>
+
+  <section class="card span2">
+    <h2>Host <span class="hint">Jetson</span></h2>
+    <dl class="kv" id="host-kv"></dl>
+    <h3>Bookmark <span class="hint">these survive a DHCP change</span></h3>
+    <div id="urls"></div>
+
+    <!-- The only buttons on this page that stop the COMPUTER rather than a
+         program, so they sit at the bottom, apart from the readouts, and both
+         start disabled: they stay that way until a poll has proved sudo works
+         here and the FC is not reporting a vehicle in the air. Each asks twice
+         before anything happens, and the server refuses a POST that does not
+         carry ?confirm=<mode> -- see hostpower.py. -->
+    <h3>Power <span class="hint">this Jetson — not the flight controller</span></h3>
+    <div class="row">
+      <button id="host-reboot" class="caution small" disabled>Reboot Jetson</button>
+      <button id="host-poweroff" class="danger small" disabled>Power off Jetson</button>
+    </div>
+    <p class="note" id="host-power-note" style="margin:6px 0 0">checking…</p>
+  </section>
+
+  <section class="card span4">
+    <h2>Stack
+      <span class="hint" id="busy-hint"></span>
+    </h2>
+    <div class="row" style="margin-bottom:10px">
+      <button id="restart" class="ghost">Restart cleanly</button>
+      <button id="stop-external" class="ghost" disabled>Stop outside nodes</button>
+      <span class="note" style="margin:0">Restart stops what is running, waits
+        for DDS to settle, then brings the same set back in order, on the same
+        config — it is refused while the DTP follower runs.
+        <em>Stop outside nodes</em> adopts and stops anything started from a
+        terminal — STOP ALL does that too.</span>
+    </div>
+    <div id="procs" class="procs"></div>
+    <h3>Topic rates</h3>
+    <div id="rates" class="chips"></div>
+    <h3>Publishers <span class="hint">not subscribed — presence only</span></h3>
+    <div id="presence" class="chips"></div>
+  </section>
+
+  <!-- The standard follower bring-up, in order, for the mode picked at the top.
+       Every button here is one that already exists on this page (a row's
+       Start, a check, the recorder, Engage FOLLOW) with its own interlock; the
+       card adds the ORDER and a verdict next to each. The steps are
+       scripts/gcs/flightday.py. -->
+  <section class="card span4" id="flight-card">
+    <h2>Flight day
+      <span class="hint">the standard follower bring-up — pick a mode, press down the list</span>
+    </h2>
+    <div id="flight-mode" class="flight-mode"></div>
+    <div id="flight-steps" class="steps"></div>
+  </section>
+
+  <!-- Remote control. Hidden until Admin control is unlocked, and the server
+       sends no /api/rc data to a locked client at all -- the panel is absent
+       because the data is, not the other way round. Every button here
+       publishes ONE /goal_pose; SUPER plans the path. There is deliberately no
+       STOP button: SUPER's FSM has no stop input, and a button that implied
+       otherwise would be the most dangerous thing on this page. -->
+  <section class="card span4" id="rc-card" hidden>
+    <h2>Remote control
+      <span class="hint">goal-based — SUPER plans and avoids</span>
+    </h2>
+
+    <div id="rc-ready" class="chips"></div>
+    <!-- Which of SUPER's two goal inputs these controls use, decided from the
+         ROS graph rather than the config, and what SUPER said about the last
+         goal. On the follow path that is a real answer from the planner
+         (ACCEPTED / SNAPPED / DROPPED); on the click path there is nothing to
+         report, because that path never says anything. -->
+    <p class="note rc-path" id="rc-path">—</p>
+
+    <div class="rc-grid">
+      <div class="rc-cell">
+        <!-- Attitude. The 100 Hz subscription behind this exists only while
+             this card is open and visible: 7.5% of a core, measured. -->
+        <svg id="rc-horizon" class="horizon" viewBox="-100 -100 200 200"
+             aria-label="attitude indicator">
+          <defs>
+            <clipPath id="rc-clip"><circle cx="0" cy="0" r="92"/></clipPath>
+          </defs>
+          <g clip-path="url(#rc-clip)">
+            <g id="rc-ball">
+              <rect x="-300" y="-300" width="600" height="300" class="sky"/>
+              <rect x="-300" y="0" width="600" height="300" class="ground"/>
+              <line x1="-300" y1="0" x2="300" y2="0" class="horizon-line"/>
+              <g class="pitch-ladder" id="rc-ladder"></g>
+            </g>
+          </g>
+          <circle cx="0" cy="0" r="92" class="bezel"/>
+          <path d="M -46 0 L -16 0 M 16 0 L 46 0 M 0 -6 L 0 6" class="crosshair"/>
+          <path id="rc-roll-ptr" d="M 0 -92 l -8 -12 l 16 0 z" class="rollptr"/>
+        </svg>
+        <!-- Heading. The ball shows roll and pitch; without this, "which way
+             is the nose" is a number you have to read rather than see -- and
+             on this airframe the LiDAR-to-FC yaw offset is still unmeasured,
+             so it is the one that deserves a picture. -->
+        <svg id="rc-compass" class="compass" viewBox="-50 -50 100 100"
+             aria-label="heading indicator">
+          <circle cx="0" cy="0" r="44" class="bezel"/>
+          <g id="rc-rose">
+            <g class="ticks" id="rc-rose-ticks"></g>
+            <text x="0" y="-28" class="card-n">N</text>
+            <text x="30" y="4" class="card">E</text>
+            <text x="0" y="36" class="card">S</text>
+            <text x="-30" y="4" class="card">W</text>
+          </g>
+          <path d="M 0 -44 l -6 -9 l 12 0 z" class="nose"/>
+        </svg>
+        <dl class="kv" id="rc-att-kv"></dl>
+      </div>
+
+      <div class="rc-cell">
+        <!-- Tap = one step. Nothing repeats while held: a stuck touch event or
+             a queued packet must not turn into distance. -->
+        <div class="dpad">
+          <button class="rc-btn" id="rc-b-yaw_left" data-axis="yaw_left"  title="rotate left">⟲</button>
+          <button class="rc-btn" id="rc-b-forward" data-axis="forward"   title="nose forward">▲</button>
+          <button class="rc-btn" id="rc-b-yaw_right" data-axis="yaw_right" title="rotate right">⟳</button>
+          <button class="rc-btn" id="rc-b-left" data-axis="left"      title="slide left">◀</button>
+          <div class="dpad-mid" id="rc-step-label">1.0 m</div>
+          <button class="rc-btn" id="rc-b-right" data-axis="right"     title="slide right">▶</button>
+          <button class="rc-btn" id="rc-b-down" data-axis="down"      title="descend">▼<small>alt</small></button>
+          <button class="rc-btn" id="rc-b-back" data-axis="back"      title="nose backward">▼</button>
+          <button class="rc-btn" id="rc-b-up" data-axis="up"        title="climb">▲<small>alt</small></button>
+        </div>
+        <!-- Chips for a gloved finger at a field, boxes for a number that is
+             not one of them. Both drive the same two values. -->
+        <div class="chips" id="rc-steps"></div>
+        <div class="chips" id="rc-yaw-steps"></div>
+        <div class="row rc-typed">
+          <label for="rc-step-input">step</label>
+          <input id="rc-step-input" type="number" step="0.05" inputmode="decimal"
+                 autocomplete="off" spellcheck="false"><span class="unit">m</span>
+          <label for="rc-yaw-input">turn</label>
+          <input id="rc-yaw-input" type="number" step="5" inputmode="decimal"
+                 autocomplete="off" spellcheck="false"><span class="unit">°</span>
+        </div>
+      </div>
+
+      <div class="rc-cell">
+        <!-- Current altitude, and the commanded one as a ghost. The band is
+             ROG-Map's EFFECTIVE one, which is not the configured one. -->
+        <div class="tape" id="rc-tape">
+          <div class="tape-band"></div>
+          <div class="tape-ghost" id="rc-tape-ghost"></div>
+          <div class="tape-now" id="rc-tape-now"></div>
+          <div class="tape-lab tape-top" id="rc-tape-max">—</div>
+          <div class="tape-lab tape-bot" id="rc-tape-min">—</div>
+        </div>
+        <div class="big" id="rc-alt">—</div>
+        <div class="sub" id="rc-alt-sub">altitude</div>
+        <input id="rc-alt-slider" type="range" min="0" max="1" step="0.01" value="0">
+        <div class="row rc-typed">
+          <input id="rc-alt-input" type="number" step="0.1" inputmode="decimal"
+                 autocomplete="off" spellcheck="false"><span class="unit">m</span>
+          <button id="rc-alt-go" class="chip">Go</button>
+        </div>
+        <div class="note" id="rc-alt-note" style="margin:4px 0 0"></div>
+      </div>
+    </div>
+
+    <!-- The coordinate bar: one absolute goal, not a nudge. Typed in
+         lidar_init, because that is the frame SUPER plans in; the PX4 echo is
+         read-only and exists so a number copied off QGroundControl is visibly
+         a different number before it is sent, rather than after. -->
+    <div class="rc-bar" id="rc-goto">
+      <h3>Go to coordinates
+        <span class="hint">absolute, in lidar_init — the frame SUPER plans in</span>
+      </h3>
+      <div class="rc-now" id="rc-goto-now">—</div>
+      <div class="row rc-fields">
+        <label for="rc-gx">x</label>
+        <input id="rc-gx" type="number" step="0.1" inputmode="decimal"
+               autocomplete="off" spellcheck="false">
+        <label for="rc-gy">y</label>
+        <input id="rc-gy" type="number" step="0.1" inputmode="decimal"
+               autocomplete="off" spellcheck="false">
+        <label for="rc-gz">z</label>
+        <input id="rc-gz" type="number" step="0.1" inputmode="decimal"
+               autocomplete="off" spellcheck="false">
+        <label for="rc-gyaw">yaw</label>
+        <input id="rc-gyaw" type="number" step="5" inputmode="decimal"
+               autocomplete="off" spellcheck="false" placeholder="hold">
+        <button id="rc-goto-fill" class="ghost">Use current</button>
+        <button id="rc-goto-send">Send goal</button>
+      </div>
+      <p class="note" id="rc-goto-note">—</p>
+    </div>
+
+    <!-- Did the last goal actually happen? Sent / accepted / moving / arrived,
+         with the arrival test being SUPER's own closeToGoal(0.1) so this page
+         and the planner mean the same thing by "there". -->
+    <div class="rc-prog" id="rc-prog" hidden>
+      <div class="rc-prog-head">
+        <b id="rc-prog-label">—</b>
+        <span class="rc-prog-dist" id="rc-prog-dist"></span>
+      </div>
+      <div class="rc-prog-bar"><div id="rc-prog-fill"></div></div>
+      <div class="note" id="rc-prog-detail" style="margin:5px 0 0"></div>
+    </div>
+
+    <p class="note" id="rc-note">—</p>
+    <p class="note rc-abort" id="rc-abort">
+      <b>Abort is the RC.</b> Channel-11 Offboard switch OFF — you then get
+      whatever channel 5 is on, so leave it on Position. SUPER's FSM takes a
+      goal, a follow goal and a yaw target, and nothing else: there is no stop
+      message for this page to send.
+    </p>
+  </section>
+
+  <section class="card span4" id="bag-card">
+    <h2>Recording <span class="hint">ros2 bag → bags/</span></h2>
+    <div class="row">
+      <!-- Disabled until the first poll: with no free-space figure yet, the
+           only thing pressing it could do is fail. -->
+      <button id="bag-start" disabled>Start recording</button>
+      <button id="bag-stop" class="ghost" disabled>Stop</button>
+      <span id="bag-state" class="pill muted">checking…</span>
+      <input id="bag-label" type="text" spellcheck="false" autocomplete="off"
+             placeholder="label (optional) — e.g. p3-hover">
+    </div>
+    <p class="note" id="bag-note"></p>
+
+    <!-- Two chips rather than radio buttons: the same shape as every other
+         choice on this page, and a chip is a <button>, which the headless
+         render test can click. -->
+    <div class="row" style="margin-top:10px">
+      <button id="bag-mode-all" class="chip sel">All topics</button>
+      <button id="bag-mode-pick" class="chip">Choose topics</button>
+      <span class="note" id="bag-sel" style="margin:0"></span>
+    </div>
+
+    <div id="bag-picker" hidden>
+      <div class="row" style="margin-top:9px">
+        <input id="bag-filter" type="text" spellcheck="false" autocomplete="off"
+               placeholder="filter, e.g. fmu or lidar">
+        <button id="bag-all-shown" class="ghost small">Select shown</button>
+        <button id="bag-none" class="ghost small">Clear</button>
+        <button id="bag-refresh" class="ghost small">Refresh</button>
+      </div>
+      <div id="bag-topics" class="chips" style="margin-top:9px"></div>
+    </div>
+
+    <h3>Recent recordings <span class="hint">bags/ — gitignored</span></h3>
+    <div id="bag-list" class="baglist"></div>
+  </section>
+
+  <section class="card span2">
+    <h2>3D view <span class="hint">RViz, on your laptop</span></h2>
+    <div>
+      <div class="row">
+        <!-- Both start disabled: until the first poll says a helper is there,
+             a click could only fail, and a button that does nothing when
+             pressed reads as a broken page. -->
+        <button id="rviz-start" disabled>Open RViz</button>
+        <button id="rviz-stop" class="ghost" disabled>Close RViz</button>
+        <span id="rviz-state" class="pill muted">checking…</span>
+      </div>
+      <p class="note" id="rviz-note"></p>
+      <div class="cmdrow" id="cmdrow" hidden>
+        <code id="viewer-cmd">…</code>
+        <button class="ghost small" id="copy-cmd">copy</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="card span2" id="cam-card" hidden>
+    <h2>Camera <span class="hint">Gemini 336L</span></h2>
+    <div class="row">
+      <!-- All three start disabled: the first poll decides. A Gemini can be
+           opened by exactly one process, so Start is only offered when the
+           camera is genuinely free -- and when it is not, cam-note says which
+           process has it rather than leaving a dead button. -->
+      <button id="cam-start" disabled>Start camera</button>
+      <button id="cam-stop" class="ghost" disabled>Stop camera</button>
+      <button id="cam-view" class="ghost" disabled>Show feed</button>
+      <span id="cam-state" class="pill muted">checking…</span>
+    </div>
+    <p class="note" id="cam-note"></p>
+    <!-- Two separate things, deliberately: "Start camera" runs the driver, and
+         these choose which already-published topic to watch. On this Jetson
+         the camera is often owned by another launch, and subscribing to it is
+         a first-class action rather than a fallback. -->
+    <div id="cam-sources" class="chips" hidden></div>
+    <div class="feed" id="cam-wrap" hidden>
+      <img id="cam-img" alt="live camera feed">
+      <div class="feed-meta" id="cam-meta"></div>
+    </div>
+  </section>
+
+  <section class="card span2">
+    <h2>Checks <span class="hint">read-only</span></h2>
+    <div id="checks" class="chips"></div>
+    <p class="note">One at a time — several of these are MAVLink clients and
+      only one process may hold UDP&nbsp;14569.</p>
+  </section>
+
+  <section class="card span4">
+    <h2>Log</h2>
+    <div id="log-tabs" class="tabs"></div>
+    <pre id="log"></pre>
+  </section>
+
+</main>
+
+<footer>
+  Starts and stops <em>software</em> only — no arming, no mode change, no
+  parameter writes. Those stay on the RC and
+  <code>scripts/px4/offboard_engage.py</code>. The two exceptions, both
+  interlocked: archiving the FC crash dumps, and rebooting the FC (refused
+  unless telemetry says disarmed and on the ground). A <em>live</em> DTP
+  follower is software that can command the aircraft once the pilot engages
+  Offboard, so it only starts disarmed, on the follow config. Some panels sit
+  behind <em>Admin control</em>, which has its own password.
+  <div class="by">Kevin Biju Mathew</div>
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

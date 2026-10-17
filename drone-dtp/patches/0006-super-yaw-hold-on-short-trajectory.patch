@@ -1,0 +1,35 @@
+diff --git a/super_planner/src/traj_opt/yaw_traj_opt.cpp b/super_planner/src/traj_opt/yaw_traj_opt.cpp
+index 50e6fce..7139d25 100755
+--- a/super_planner/src/traj_opt/yaw_traj_opt.cpp
++++ b/super_planner/src/traj_opt/yaw_traj_opt.cpp
+@@ -99,6 +99,10 @@ namespace traj_opt {
+     YawTrajOpt::YawTrajOpt(const double &_yaw_dot_max) : yaw_dot_max_(_yaw_dot_max) {
+     }
+ 
++    // Below this much total displacement a free-end yaw holds the start heading instead of
++    // aligning to the (noise-dominated) direction of travel. See the note in optimize().
++    static constexpr double kMinAlignDispM = 0.3;
++
+     bool YawTrajOpt::optimize(const Vec4f &istate_in,
+                               const Vec4f &gstate_in,
+                               const Trajectory &pos_traj,
+@@ -133,7 +137,18 @@ namespace traj_opt {
+                 pt_i = pos_traj.getPos(t_i);
+                 dir = pt_g - pt_i;
+             }
+-            goal_state(0) = atan2(dir.y(), dir.x());
++            // DTP yaw hold (2026-09-14). If the search above reached the start of the
++            // trajectory and still found less than kMinAlignDispM of displacement, this is a
++            // hold correction, not a move: the direction is the aircraft's own wobble, different
++            // on every replan. Aligning to it made the aircraft pirouette in Offboard on
++            // 2026-09-14 (yaw rate 52 deg/s median with a fixed hold goal re-planned at 2 Hz).
++            // Keep the current heading instead. The waypoint allocator already applies the same
++            // rule to intermediate waypoints (dir.norm() > 0.1 there); this is the end state.
++            if (dir.norm() < kMinAlignDispM) {
++                goal_state(0) = init_state(0);
++            } else {
++                goal_state(0) = atan2(dir.y(), dir.x());
++            }
+         }
+ 
+         VecDf times;

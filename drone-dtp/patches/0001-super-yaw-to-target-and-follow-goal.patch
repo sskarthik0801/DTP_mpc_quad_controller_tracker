@@ -1,0 +1,552 @@
+diff --git a/super_planner/config/follow_test_ros2.yaml b/super_planner/config/follow_test_ros2.yaml
+new file mode 100644
+index 0000000..9db46ff
+--- /dev/null
++++ b/super_planner/config/follow_test_ros2.yaml
+@@ -0,0 +1,210 @@
++# M0.7 Step 0.7.4 test fixture -- click_smooth_ros2.yaml plus the DTP follow-goal path and
++# YAW_TO_TARGET enabled. Kept separate so the stock click config keeps its upstream behaviour.
++fsm:
++  click_goal_en: true
++  # DTP moving-goal ingestion: preserves goal Z and answers on goal_status_topic.
++  follow_goal_en: true
++  follow_goal_topic: "/planning/follow_goal"
++  goal_status_topic: "/planning/goal_status"
++  yaw_target_topic: "/planning/yaw_target"
++  click_goal_topic: "/goal_pose"
++  click_height: 1.5
++  click_yaw_en: true
++  replan_rate: 15.0
++  cmd_topic: "/planning/pos_cmd"
++  mpc_cmd_topic: "/planning_cmd/poly_traj"
++  timer_en: true
++
++super_planner:
++  backup_traj_en: true
++  detailed_log_en: false
++  visualization_en: true
++  use_fov_cut: false
++  print_log: false
++  visual_process: false
++  frontend_in_known_free: false
++  goal_yaw_en: true
++  goal_vel_en: false
++  corridor_bound_dis: 1.0
++  corridor_line_max_length: 1.2
++  safe_corridor_line_max_length: 5.0
++  iris_iter_num: 2
++  obs_skip_num: 2
++  replan_forward_dt: 0.1
++  planning_horizon: 7.0
++  sensing_horizon: -1
++  receding_dis: 4.0
++  # ROBOT_R: MEASURED 2026-09-14 (the user, props on): 0.25 m hub centre to prop tip, + 0.05 m
++  # margin = 0.30. Upstream's 0.2 clipped 5 cm off every corridor. Nothing downstream clamps
++  # this; re-measure after any prop or arm change.
++  robot_r: 0.30
++  # M5.2 shared: 1.0 rad/s (a subject crossing at 1.2 m/s, 3 m away, needs 0.4 rad/s). Was 3.0.
++  yaw_dot_max: 1.0
++  # Yaw mode: 1 heading to velocity, 2 heading to goal, 3 heading to followed target
++  yaw_mode: 3
++  mpc_horizon: 15
++
++
++traj_opt:
++  switch:
++    save_log_en: false
++    print_optimizer_log: false
++
++  boundary:
++    # M5.2 STAGED FOLLOW-FLIGHT ENVELOPE (docs/m5-m6-plan.md). Default here is S1, the safe
++    # first-flight limit. Nothing downstream clamps SUPER -- px4_offboard_bridge forwards whatever
++    # it plans -- so this file IS the limit. Bump between flights only after the previous stage
++    # passed; do it here and in the patch, never only in install/.
++    #   S1 (first): max_vel 0.5  max_acc 0.5   subject standing -> 0.3 m/s   5 flights
++    #   S2:         max_vel 1.0  max_acc 1.0   subject 0.7 m/s                6 flights
++    #   S3:         max_vel 1.5  max_acc 1.5   subject 1.2 m/s               12 flights
++    # Was upstream's max_vel 5.0 / max_acc 5.0 -- a first-flight blocker.
++    max_vel: 3.0   # user 2026-09-26, beyond S3 (was 1.0 S2 2026-09-16, 0.5 S1)
++    max_acc: 2.0   # user 2026-09-26, beyond S3 (was 1.0 S2 2026-09-21, 0.5 S1)
++    max_jerk: 120.0
++    max_omg: 1.5
++    max_acc_thr: 20.0
++    min_acc_thr: 6.0
++    penna_margin: 0.05
++
++  exp_traj:
++    # 1 for xi 2 for pos
++    pos_constraint_type: 1
++    energy_cost_type: 4
++    block_energy_cost: false
++    opt_accuracy: 5.0e-6
++    scale_factor: 1.0
++    integral_reso: 15
++    smooth_eps: 0.01
++    penna_t: 12000.0
++    penna_pos: 5.0e+6
++    penna_vel: 5.0e+5
++    penna_acc: 5.0e+5
++    penna_jerk: -5.0e+5
++    penna_attract: 1.0e+3
++    penna_omg:  5.0e+5
++    penna_thr: 1.0e+5
++
++  backup_traj:
++    uniform_time_en: true
++    pos_constraint_type: 1
++    piece_num: 2
++    energy_cost_type: 4
++    block_energy_cost: true
++    opt_accuracy: 1.0e-6
++    scale_factor: 1.0
++    integral_reso: 12
++    smooth_eps: 0.01
++    penna_t: 1200.0
++    penna_ts: 1.0e+5
++    penna_pos: 1.0e+6
++    penna_vel: 1.0e+5
++    penna_acc: 1.0e+5
++    penna_jerk: -1.0e+5
++    penna_omg: 1.0e+5
++    penna_max_acc_thr: 1.0e+5
++    penna_min_acc_thr: 1.0e+5
++
++  flatness:
++    mass: 1.64
++    dh: 0.35
++    dv: 0.35
++    cp: 0.001
++    v_eps: 0.0001
++    grav: 9.81
++
++
++astar:
++  map_voxel_num: [ 500, 500, 100 ]
++  visual_process: false
++  allow_diag: true
++  # 0 DIAG; 1 MANHATTAN; 2 EUCLIDEAN
++  heu_type: 2
++  debug_visualization_en: false
++
++
++rog_map:
++  resolution: 0.1
++  inflation_resolution: 0.2
++  inflation_step: 2
++  unk_inflation_en: false
++  unk_inflation_step: 1
++  map_size: [ 50,50,6 ]
++  # If the map rolling is disable, the map origin [m] should be set.
++  fix_map_origin: [ 0,0,1.5 ]
++  frontier_extraction_en: false
++
++  # Virtual ceil and ground
++  virtual_ceil_height: 3.5
++  virtual_ground_height: -1.0
++
++  load_pcd_en: false
++
++  map_sliding:
++    enable: true
++    # The minimum distance [m] to slide the map.
++    threshold: 0.3
++
++  esdf:
++    enable: false
++    resolution: 0.1
++    # The range of esdf around the odom [m].
++    local_update_box: [ 5,5,3 ]
++
++  # If [enable = true], the ROG-Map will actively take ros topic as input.
++  #  else user should call function [updateMap] to update the map.
++  ros_callback:
++    enable: true
++    cloud_topic: "/cloud_registered"
++    odom_topic: "/lidar_slam/odom"
++    odom_timeout: 2.0
++
++
++  visualization:
++    enable: true
++    # when enabled, use rqt_reconfigure to change the visualization parameters.
++    use_dynamic_reconfigure: false
++    # The rate of visualization [Hz], if set to 0, the visualization will not be triggered by frame.
++    time_rate: 2
++    # The frame rate of visualization [Hz], if set to 0, the visualization will not be triggered by frame.
++    frame_rate: 0
++    # visualization range along the odom [m].
++    range: [ 15, 15,4 ]
++    frame_id: "world"
++    pub_unknown_map_en: false
++
++  # Intensity filter for input point cloud. If the point intensity is less than this value,
++  # it will be ignored (to avoid noise like dusk).
++  intensity_thresh: -10
++  # The temporal downsample rate for input point cloud.
++  #  e.g. if set to k, the point cloud will be downsampled to 1/k.
++  point_filt_num: 1
++
++  # Probabilistc update
++  raycasting:
++    # if disable, the map will only maintain occupied information, and all other grid
++    # will be considered as unknown.
++    enable: true
++    batch_update_size: 1
++    local_update_box: [ 100,100,5 ]
++    # The range of raycasting [m].
++    ray_range: [0.5, 100 ]
++
++    p_min: 0.12
++    p_miss: 0.49
++    p_free: 0.499
++    p_occ: 0.85
++    p_hit: 0.9
++    # M5.2: 0.95 (was 0.98) so a cell a walked-away subject stamped clears in ~31 clean rays
++    # instead of ~54 (docs/m5-m6-plan.md M5.3). Matches click_smooth_ros2.yaml.
++    p_max: 0.95
++    # The threshold of a non-occupied inf map grid to be considered as free. [0.0-1.0]
++    # for counter map, if each cell contains N cells in prob map, then only when
++    # N_unk > N * unk_thresh cells are unknown, the cell will be considered as unknown.
++    # example: 1) if unk_thresh is set 0.0, then once at least one cell in prob map is unknown,
++    #             the cell will be considered as unknown.
++    #         2) if unk_thresh is set to 1.0, then only all cells in prob map are unknown,
++    #             the cell will be considered as unknown.
++    # in all, 1.0 is more aggressive while 0.0 is more conservative.
++    unk_thresh: 1.0
++
+diff --git a/super_planner/include/fsm/config.hpp b/super_planner/include/fsm/config.hpp
+index 4f0aa43..585ba47 100755
+--- a/super_planner/include/fsm/config.hpp
++++ b/super_planner/include/fsm/config.hpp
+@@ -50,6 +50,11 @@ namespace fsm {
+         string cmd_topic, mpc_cmd_topic, click_goal_topic;
+         double yaw_dot_max{};
+ 
++        // M0.7 Step 0.7.4 (DTP). Dedicated moving-goal ingestion + YAW_TO_TARGET, ROS2 only.
++        // Default OFF so upstream/simulation configs behave exactly as before.
++        bool follow_goal_en{false};
++        string follow_goal_topic, goal_status_topic, yaw_target_topic;
++
+         Config() = default;
+ 
+         Config(const std::string & cfg_path) {
+@@ -64,6 +69,12 @@ namespace fsm {
+             loader.LoadParam("fsm/mpc_cmd_topic", mpc_cmd_topic, string("/planning_cmd/mpc"));
+             loader.LoadParam("fsm/click_goal_topic", click_goal_topic, string("/planning/click_goal_topic"));
+ 
++            // M0.7 Step 0.7.4 -- DTP follow-goal ingestion (ROS2 only; ignored by the ROS1 build).
++            loader.LoadParam("fsm/follow_goal_en", follow_goal_en, false);
++            loader.LoadParam("fsm/follow_goal_topic", follow_goal_topic, string("/planning/follow_goal"));
++            loader.LoadParam("fsm/goal_status_topic", goal_status_topic, string("/planning/goal_status"));
++            loader.LoadParam("fsm/yaw_target_topic", yaw_target_topic, string("/planning/yaw_target"));
++
+ 
+             loader.LoadParam("super_planner/yaw_dot_max", yaw_dot_max, 1.0, true);
+             loader.LoadParam("super_planner/visualization_en", visualization_en, false, true);
+diff --git a/super_planner/include/fsm/fsm.h b/super_planner/include/fsm/fsm.h
+index 567b6e9..54ae94f 100755
+--- a/super_planner/include/fsm/fsm.h
++++ b/super_planner/include/fsm/fsm.h
+@@ -94,6 +94,16 @@ namespace fsm {
+ 
+ 
+     public:
++        // M0.7 Step 0.7.4 -- what setFollowGoal() actually did with the requested goal.
++        // Mirrors dtp_msgs/GoalStatus so follow_planner can tell whether its goal took effect.
++        // Upstream setGoalPosiAndYaw() performs the same snap/drop silently and reports nothing,
++        // which is unsafe for a continuously-moving standoff goal.
++        enum GoalIngestStatus {
++            GOAL_ACCEPTED = 0,   // used exactly as requested
++            GOAL_SNAPPED  = 1,   // moved to the nearest free inflated cell within snap_radius
++            GOAL_DROPPED  = 2    // rejected (deeply occupied); the PREVIOUS goal is still active
++        };
++
+         Fsm() = default;
+         ~Fsm();
+ 
+@@ -101,6 +111,20 @@ namespace fsm {
+             planner_ptr_->updateROGMap(cloud, pose);
+         }
+ 
++        // M0.7 Step 0.7.4 -- dedicated ingestion path for a continuously-moving follow goal.
++        // Deliberately NOT setGoalPosiAndYaw(): that one is the RViz click path and it
++        //   (a) overwrites goal Z with cfg_.click_height, and
++        //   (b) silently keeps the previous goal when the point is deeply occupied.
++        // Both are wrong for a follower. Here Z is preserved as requested, and the caller is told
++        // exactly what happened so it can react (see dtp_msgs/GoalStatus).
++        // out_goal_p returns the goal SUPER actually adopted.
++        GoalIngestStatus setFollowGoal(const Vec3f &p, const double &yaw, Vec3f &out_goal_p);
++
++        // Forward the followed target to the planner for YAW_TO_TARGET (super_planner/yaw_mode == 3).
++        void setYawTarget(const Vec3f &target_p, const double &stamp_WT) {
++            planner_ptr_->setYawTarget(target_p, stamp_WT);
++        }
++
+         void callPlanOnce(const Vec3f &goal) {
+             TimeConsuming tc("Call replan once time", true);
+             fmt::print(" -- [Fsm] Call plan once, cur state {}.\n", MACHINE_STATE_STR[machine_state_]);
+diff --git a/super_planner/include/ros_interface/ros2/fsm_ros2.hpp b/super_planner/include/ros_interface/ros2/fsm_ros2.hpp
+index 1202948..7d97ea4 100644
+--- a/super_planner/include/ros_interface/ros2/fsm_ros2.hpp
++++ b/super_planner/include/ros_interface/ros2/fsm_ros2.hpp
+@@ -33,6 +33,8 @@
+ #include <rclcpp/rclcpp.hpp>
+ #include <ros_interface/ros2/ros2_interface.hpp>
+ #include "geometry_msgs/msg/pose_stamped.hpp"
++#include "geometry_msgs/msg/point_stamped.hpp"
++#include "dtp_msgs/msg/goal_status.hpp"
+ #include "nav_msgs/msg/path.hpp"
+ #include "nav_msgs/msg/odometry.hpp"
+ #include "mars_quadrotor_msgs/msg/position_command.hpp"
+@@ -47,6 +49,10 @@ namespace fsm {
+         rclcpp::Publisher<mars_quadrotor_msgs::msg::PolynomialTrajectory>::SharedPtr mpc_cmd_pub_;
+         rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
+         rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
++        // M0.7 Step 0.7.4 (DTP follow path; created only when fsm/follow_goal_en is true)
++        rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr follow_goal_sub_;
++        rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr yaw_target_sub_;
++        rclcpp::Publisher<dtp_msgs::msg::GoalStatus>::SharedPtr goal_status_pub_;
+ 
+         rclcpp::TimerBase::SharedPtr execution_timer_, replan_timer_, cmd_timer_;
+         rclcpp::CallbackGroup::SharedPtr exec_cbk_group_, replan_cbk_group_, cmd_cbk_group_, goal_cbk_group_;
+@@ -281,6 +287,44 @@ namespace fsm {
+             setGoalPosiAndYaw(goal_p, goal_q);
+         }
+ 
++        // M0.7 Step 0.7.4 -- moving-goal ingestion for follow_planner.
++        // Unlike goalCallback() this preserves Z and ALWAYS answers on goal_status_topic so the
++        // follower can tell whether its goal was accepted, snapped, or dropped.
++        void followGoalCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
++            const Vec3f goal_p{msg->pose.position.x, msg->pose.position.y, msg->pose.position.z};
++            const super_utils::Quatf q{msg->pose.orientation.w, msg->pose.orientation.x,
++                                       msg->pose.orientation.y, msg->pose.orientation.z};
++            double yaw = std::numeric_limits<double>::quiet_NaN();
++            if (!std::isnan(q.w()) && !std::isnan(q.x()) && !std::isnan(q.y()) && !std::isnan(q.z())) {
++                yaw = geometry_utils::get_yaw_from_quaternion(q);
++            }
++
++            Vec3f adopted;
++            const auto status = setFollowGoal(goal_p, yaw, adopted);
++
++            dtp_msgs::msg::GoalStatus out;
++            out.header.stamp = nh_->get_clock()->now();
++            out.header.frame_id = msg->header.frame_id;
++            out.status = static_cast<uint8_t>(status);
++            out.goal_p.x = adopted.x();
++            out.goal_p.y = adopted.y();
++            out.goal_p.z = adopted.z();
++            // Echo the REQUEST so a subscriber can tell whether this status answers a goal it
++            // actually sent. /planning/follow_goal has several publishers (follow_planner's
++            // standoff goals, command_mux's HOLD and NAV goals) and every one gets a status, so
++            // goal_p is not a correlation key -- on DROPPED it is the PREVIOUS goal.
++            out.requested_p.x = goal_p.x();
++            out.requested_p.y = goal_p.y();
++            out.requested_p.z = goal_p.z();
++            goal_status_pub_->publish(out);
++        }
++
++        // The point the heading should track under YAW_TO_TARGET (the followed human).
++        void yawTargetCallback(const geometry_msgs::msg::PointStamped::SharedPtr msg) {
++            setYawTarget(Vec3f{msg->point.x, msg->point.y, msg->point.z},
++                         rclcpp::Time(msg->header.stamp).seconds());
++        }
++
+         void init(const rclcpp::Node::SharedPtr nh, const std::string &cfg_path) {
+             // TODO: The current implementation uses a lenient QoS configuration for message transmission.
+             const rclcpp::QoS qos(rclcpp::QoS(1)
+@@ -315,8 +359,27 @@ namespace fsm {
+                 cmd_cnt++;
+             }
+ 
+-            if (cmd_cnt != 1) {
+-                cout << YELLOW << " -- [Fsm] CMD INPUT ERROR." << RESET << endl;
++            // M0.7 Step 0.7.4 -- dedicated moving-goal path for follow_planner, plus the
++            // YAW_TO_TARGET input. Off by default, so upstream/sim configs are unaffected.
++            if (cfg_.follow_goal_en) {
++                goal_status_pub_ = nh_->create_publisher<dtp_msgs::msg::GoalStatus>(
++                        cfg_.goal_status_topic, qos);
++                follow_goal_sub_ = nh_->create_subscription<geometry_msgs::msg::PoseStamped>(
++                        cfg_.follow_goal_topic, qos,
++                        std::bind(&FsmRos2::followGoalCallback, this, std::placeholders::_1));
++                yaw_target_sub_ = nh_->create_subscription<geometry_msgs::msg::PointStamped>(
++                        cfg_.yaw_target_topic, qos,
++                        std::bind(&FsmRos2::yawTargetCallback, this, std::placeholders::_1));
++                cout << YELLOW << " -- [Fsm] FOLLOW GOAL ENABLE (" << cfg_.follow_goal_topic
++                     << "), status on " << cfg_.goal_status_topic << RESET << endl;
++                cmd_cnt++;
++            }
++
++            // Upstream required EXACTLY one goal source. With a mux architecture (D10) more than one
++            // ingestion path is legitimate -- click for bench testing, follow for the DTP loop -- so
++            // this now only rejects the genuinely broken case of having none at all.
++            if (cmd_cnt < 1) {
++                cout << YELLOW << " -- [Fsm] CMD INPUT ERROR: no goal source enabled." << RESET << endl;
+                 exit(0);
+             }
+ 
+diff --git a/super_planner/include/super_core/config.hpp b/super_planner/include/super_core/config.hpp
+index 7577f81..82c88ff 100755
+--- a/super_planner/include/super_core/config.hpp
++++ b/super_planner/include/super_core/config.hpp
+@@ -38,7 +38,13 @@ namespace super_planner {
+     public:
+         enum YawMode{
+             YAW_TO_VEL = 1,
+-            YAW_TO_GOAL = 2
++            YAW_TO_GOAL = 2,
++            // Point the heading at an externally-supplied target point (the followed human),
++            // evaluated from the trajectory's terminal position. Unlike YAW_TO_GOAL this does NOT
++            // require connected_goal -- during a follow the goal sits beyond the planning horizon,
++            // so connected_goal is false and YAW_TO_GOAL never fires. See SuperPlanner::setYawTarget().
++            // plan/dtp-imp/05 M0.7 Step 0.7.4.
++            YAW_TO_TARGET = 3
+         };
+ 
+         traj_opt::Config exp_traj_cfg, back_traj_cfg;
+diff --git a/super_planner/include/super_core/super_planner.h b/super_planner/include/super_core/super_planner.h
+index 74cddd8..1b04115 100755
+--- a/super_planner/include/super_core/super_planner.h
++++ b/super_planner/include/super_core/super_planner.h
+@@ -89,8 +89,18 @@ namespace super_planner {
+             double goal_yaw{0};
+             bool new_goal{true};
+             bool goal_valid{true};
++            // YAW_TO_TARGET only (M0.7 Step 0.7.4): the point the heading should track -- the
++            // followed human, not the navigation goal. Stale-guarded by yaw_target_stamp_WT:
++            // if the target is older than kYawTargetTimeoutSec the planner falls back to
++            // velocity-aligned yaw rather than staring at a ghost.
++            Vec3f yaw_target_p{0, 0, 0};
++            double yaw_target_stamp_WT{-1.0};
++            bool yaw_target_valid{false};
+         } gi_;
+ 
++        // A followed target older than this (wall seconds) is ignored for yaw purposes.
++        static constexpr double kYawTargetTimeoutSec = 0.5;
++
+         FOVChecker::Ptr fov_checker_;
+ 
+         CmdTraj cmd_traj_info_;
+@@ -119,6 +129,21 @@ namespace super_planner {
+             return gi_.goal_valid;
+         }
+ 
++        // M0.7 Step 0.7.4 -- YAW_TO_TARGET support.
++        // Supply the point the heading should track (the followed human, in the world/odom frame
++        // SUPER plans in). Only has any effect when super_planner/yaw_mode == YAW_TO_TARGET (3).
++        // stamp_WT is the wall time the target was observed; targets older than
++        // kYawTargetTimeoutSec are ignored and yaw falls back to velocity-aligned.
++        void setYawTarget(const Vec3f &target_p, const double &stamp_WT) {
++            gi_.yaw_target_p = target_p;
++            gi_.yaw_target_stamp_WT = stamp_WT;
++            gi_.yaw_target_valid = true;
++        }
++
++        void clearYawTarget() {
++            gi_.yaw_target_valid = false;
++        }
++
+         typedef std::shared_ptr<SuperPlanner> Ptr;
+ 
+         void getOneHeartbeatTime(double &start_WT_pos, bool &traj_finish);
+diff --git a/super_planner/ros/ros2.CMakeLists.txt b/super_planner/ros/ros2.CMakeLists.txt
+index b93f914..4662d81 100755
+--- a/super_planner/ros/ros2.CMakeLists.txt
++++ b/super_planner/ros/ros2.CMakeLists.txt
+@@ -46,6 +46,9 @@ find_package(nav_msgs REQUIRED)
+ find_package(visualization_msgs REQUIRED)
+ find_package(PCL REQUIRED)
+ find_package(pcl_conversions REQUIRED)
++# M0.7 Step 0.7.4 (DTP) -- GoalStatus for the moving-goal ingestion path.
++# ROS2-ONLY on purpose; deliberately absent from ros1.CMakeLists.txt (dtp_msgs has no ROS1 build).
++find_package(dtp_msgs REQUIRED)
+ 
+ 
+ set(includes
+@@ -74,6 +77,7 @@ set(ros_libs
+         rog_map
+         tf2_ros
+         pcl_conversions
++        dtp_msgs
+ 
+ )
+ 
+diff --git a/super_planner/ros/ros2.package.xml b/super_planner/ros/ros2.package.xml
+index c9ae572..0d16e7e 100755
+--- a/super_planner/ros/ros2.package.xml
++++ b/super_planner/ros/ros2.package.xml
+@@ -11,6 +11,11 @@
+     <depend>nav_msgs</depend>
+     <depend>std_msgs</depend>
+     <depend>rog_map</depend>
++    <!-- M0.7 Step 0.7.4 (DTP): GoalStatus for the moving-goal ingestion path.
++         ROS2-ONLY ON PURPOSE - dtp_msgs has no ROS1 build, so it is deliberately absent from
++         ros1.package.xml. Everything that uses it is gated behind fsm/follow_goal_en (default
++         false), so the ROS1 build and all upstream configs are unaffected. -->
++    <depend>dtp_msgs</depend>
+ 
+     <export>
+         <build_type>ament_cmake</build_type>
+diff --git a/super_planner/src/super_core/fsm.cpp b/super_planner/src/super_core/fsm.cpp
+index fff0638..fe252e1 100755
+--- a/super_planner/src/super_core/fsm.cpp
++++ b/super_planner/src/super_core/fsm.cpp
+@@ -223,6 +223,27 @@ namespace fsm {
+         gi_.new_goal = true;
+     }
+ 
++    Fsm::GoalIngestStatus Fsm::setFollowGoal(const Vec3f &p, const double &yaw, Vec3f &out_goal_p) {
++        // NOTE: unlike setGoalPosiAndYaw() there is deliberately no click_height override here --
++        // a follow goal's Z is meaningful (matched-height trail, decision D6) and must survive.
++        Vec3f snapped;
++        if (!planner_ptr_->getMap()->getNearestInfCellNot(GridType::OCCUPIED, p, snapped, 3.0)) {
++            // Deeply occupied: keep the previous goal (same as upstream) but SAY SO.
++            out_goal_p = gi_.goal_p;
++            return GOAL_DROPPED;
++        }
++
++        const bool snapped_away = (snapped - p).norm() > 1e-6;
++
++        gi_.goal_p = snapped;
++        gi_.goal_yaw = yaw;
++        gi_.new_goal = true;
++        started_ = true;
++        out_goal_p = gi_.goal_p;
++
++        return snapped_away ? GOAL_SNAPPED : GOAL_ACCEPTED;
++    }
++
+     void Fsm::ChangeState(const string &call_func, const MACHINE_STATE &new_state) {
+         fmt::print(fg(fmt::color::green), " -- [Fsm]: [{}] change state from [{}] to [{}].\n", call_func,
+                    MACHINE_STATE_STR[int(machine_state_)], MACHINE_STATE_STR[int(new_state)]);
+diff --git a/super_planner/src/super_core/super_planner.cpp b/super_planner/src/super_core/super_planner.cpp
+index 8fb7a11..769a101 100755
+--- a/super_planner/src/super_core/super_planner.cpp
++++ b/super_planner/src/super_core/super_planner.cpp
+@@ -792,7 +792,26 @@ namespace super_planner {
+ 
+ 
+         bool free_end{true};
+-        if (cfg_.goal_yaw_en && !std::isnan(gi_.goal_yaw) && connected_goal) {
++        if (cfg_.yaw_mode == Config::YAW_TO_TARGET) {
++            // M0.7 Step 0.7.4. Point the heading at the followed target from where this trajectory
++            // ENDS, and do it whether or not the trajectory reaches the goal -- during a follow the
++            // goal is beyond the planning horizon so connected_goal is false, which is exactly the
++            // case YAW_TO_GOAL cannot serve.
++            const double now_WT = ros_ptr_->getSimTime();
++            const bool target_fresh = gi_.yaw_target_valid &&
++                                      (now_WT - gi_.yaw_target_stamp_WT) < kYawTargetTimeoutSec;
++            if (target_fresh) {
++                Vec3f traj_end_p = out_traj.getPos(out_traj.getTotalDuration());
++                const Vec3f los = gi_.yaw_target_p - traj_end_p;
++                // Degenerate when the target is (near) directly overhead/underneath: the heading is
++                // undefined, so leave yaw free rather than snapping to an arbitrary atan2 result.
++                if (los.head(2).norm() > 1e-3) {
++                    free_end = false;
++                    fina_yaw[0] = std::atan2(los.y(), los.x());
++                }
++            }
++            // Not fresh / degenerate -> free_end stays true == velocity-aligned fallback.
++        } else if (cfg_.goal_yaw_en && !std::isnan(gi_.goal_yaw) && connected_goal) {
+             free_end = false;
+             fina_yaw[0] = gi_.goal_yaw;
+         }

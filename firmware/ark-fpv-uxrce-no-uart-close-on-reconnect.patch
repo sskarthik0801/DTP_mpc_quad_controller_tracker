@@ -1,0 +1,98 @@
+diff --git a/src/modules/uxrce_dds_client/uxrce_dds_client.cpp b/src/modules/uxrce_dds_client/uxrce_dds_client.cpp
+index d5f2b57042..b8e9925ecb 100644
+--- a/src/modules/uxrce_dds_client/uxrce_dds_client.cpp
++++ b/src/modules/uxrce_dds_client/uxrce_dds_client.cpp
+@@ -200,6 +200,27 @@ void UxrceddsClient::deinit()
+ 	_comm = nullptr;
+ }
+ 
++bool UxrceddsClient::transportOpen() const
++{
++	if (_comm == nullptr) {
++		return false;
++	}
++
++	if (_transport == Transport::Serial) {
++		return _transport_serial != nullptr && _fd >= 0;
++	}
++
++#if defined(UXRCE_DDS_CLIENT_UDP)
++
++	if (_transport == Transport::Udp) {
++		return _transport_udp != nullptr;
++	}
++
++#endif // UXRCE_DDS_CLIENT_UDP
++
++	return false;
++}
++
+ bool UxrceddsClient::setupSession(uxrSession *session)
+ {
+ 	_participant_config = static_cast<ParticipantConfig>(_param_uxrce_dds_ptcfg.get());
+@@ -614,15 +635,33 @@ void UxrceddsClient::run()
+ 	}
+ 
+ 	while (!should_exit()) {
++		// Consecutive failed connect attempts in THIS reconnect phase. A session loss
++		// leaves the transport open, so we normally rebuild only the XRCE session on it
++		// (see transportOpen()) rather than closing and reopening the device -- the close
++		// is what hard-faults this FC. Only if the session will not come up on the open
++		// transport after many tries do we fall back to a full reopen, for the rare case
++		// of a genuinely wedged transport. That fallback path still closes the device, so
++		// it is deliberately rare.
++		unsigned connect_failures = 0;
++		const unsigned kReopenAfterFailures = 20;
++
+ 		while (!should_exit()) {
+-			if (!init()) {
+-				px4_usleep(1'000'000);
+-				PX4_ERR("init failed, will retry now");
+-				continue;
++			const bool force_reopen = connect_failures >= kReopenAfterFailures;
++
++			if (!transportOpen() || force_reopen) {
++				if (!init()) {
++					++connect_failures;
++					px4_usleep(1'000'000);
++					PX4_ERR("init failed, will retry now");
++					continue;
++				}
++
++				connect_failures = 0;   // fresh transport: start the failure count over
+ 			}
+ 
+ 			if (!setupSession(&session)) {
+ 				deleteSession(&session);
++				++connect_failures;
+ 				px4_usleep(1'000'000);
+ 				PX4_ERR("session setup failed, will retry now");
+ 				continue;
+@@ -631,6 +670,8 @@ void UxrceddsClient::run()
+ 			if (_comm && _connected) {
+ 				break;
+ 			}
++
++			++connect_failures;
+ 		}
+ 
+ 		if (should_exit()) {
+diff --git a/src/modules/uxrce_dds_client/uxrce_dds_client.h b/src/modules/uxrce_dds_client/uxrce_dds_client.h
+index 7b5208a80e..522aab20e9 100644
+--- a/src/modules/uxrce_dds_client/uxrce_dds_client.h
++++ b/src/modules/uxrce_dds_client/uxrce_dds_client.h
+@@ -120,6 +120,14 @@ private:
+ 	bool init();
+ 	void deinit();
+ 
++	// True when the transport (the byte pipe) is already open, so a reconnect can
++	// rebuild only the XRCE session on top of it instead of closing and reopening the
++	// device. Closing the serial device on every session loss triggers a NuttX
++	// uart_close/uart_datareceived race that hard-faults this FC (see the ARK FPV repo,
++	// firmware/faults/README.md). init()/deinit() are the only things that open/close it;
++	// deleteSession() does not, so once open it stays open across reconnects.
++	bool transportOpen() const;
++
+ 	bool setupSession(uxrSession *session);
+ 	void deleteSession(uxrSession *session);
+ 

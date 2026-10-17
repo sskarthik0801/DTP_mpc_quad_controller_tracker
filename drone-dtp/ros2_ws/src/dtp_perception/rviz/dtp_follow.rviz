@@ -1,0 +1,205 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /DTP1
+        - /Aircraft1
+      SplitterRatio: 0.5
+    Width: 380
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Name: root
+  # lidar_init is FAST-LIO's world frame, measured off a live /lidar_slam/odom on 2026-09-08 --
+  # not inferred. It has been wrong in this project's configs twice (camera_init, odom), so if the
+  # view comes up empty with "frame does not exist", check the real frame before editing anything:
+  #     ros2 topic echo --field header.frame_id /lidar_slam/odom
+  Global Options:
+    Background Color: 23; 28; 31
+    Fixed Frame: lidar_init
+    Frame Rate: 20
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Cell Size: 1
+      Plane Cell Count: 24
+      Color: 60; 68; 72
+      Alpha: 0.4
+
+    # ---- THE DTP STACK -------------------------------------------------------------------
+    # Everything our stack believes, in one display. dtp_viz converts it to markers because RViz
+    # cannot render dtp_msgs/TargetArray or std_msgs/String state.
+    #   people    cylinders, GREEN = the locked subject, grey = other detections
+    #   labels    track id, range, confidence
+    #   veto      the 1.5 m x +/-2.0 m proximity keep-out around EVERY person.
+    #             RED means command_mux is currently holding on PROXIMITY.
+    #   forecast  the locked subject's CTRV predicted path
+    #   standoff_goal  the goal we would fly to (shadow topic in Stage A, so it commands nothing)
+    #   status    lock state, arbitration state, sensors_ok/perception_ok -- RED if any is unhappy
+    - Class: rviz_default_plugins/MarkerArray
+      Name: DTP
+      Enabled: true
+      Topic:
+        Value: /dtp/viz
+        Depth: 1
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
+      Namespaces:
+        people: true
+        labels: true
+        veto: true
+        forecast: true
+        standoff_goal: true
+        status: true
+
+    # ---- WHAT THE PLANNER SEES ------------------------------------------------------------
+    # The deskewed registered cloud. This is the SAME data the occupancy map is built from, so it
+    # shows whether the followed person is actually present as returns -- which is the claim the
+    # "target-as-obstacle" design rests on.
+    #
+    # *** /cloud_registered, NOT /cloud_registered_body. ***  This display pointed at the body-frame
+    # topic until 2026-09-12, and config/mid360.yaml:56 has scan_bodyframe_pub_en: false -- so
+    # FAST-LIO never published it and the main data panel of this config was permanently empty,
+    # with no error anywhere. /cloud_registered IS published (scan_publish_en: true,
+    # dense_publish_en: true at mid360.yaml:54-55) and is already in the world frame, which is this
+    # config's Fixed Frame -- so it also needs no TF to render.
+    - Class: rviz_default_plugins/PointCloud2
+      Name: LiDAR (registered)
+      Enabled: true
+      Topic:
+        Value: /cloud_registered
+        Depth: 2
+        Durability Policy: Volatile
+        Reliability Policy: Best Effort
+      Size (m): 0.03
+      Style: Points
+      Color Transformer: AxisColor
+      Axis: Z
+      Decay Time: 0
+      Alpha: 0.65
+
+    # ---- THE AIRCRAFT ---------------------------------------------------------------------
+    - Class: rviz_default_plugins/Odometry
+      Name: Aircraft
+      Enabled: true
+      Topic:
+        Value: /lidar_slam/odom
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Best Effort
+      Keep: 1
+      Shape:
+        Value: Arrow
+        Shaft Length: 0.4
+        Shaft Radius: 0.05
+        Head Length: 0.15
+        Head Radius: 0.1
+        Color: 90; 200; 250; 255
+      Covariance:
+        Value: false
+
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: false
+      Marker Scale: 0.5
+      Show Axes: true
+      Show Names: true
+      Frames:
+        All Enabled: false
+        lidar_init: true
+        lidar_imu: true
+        camera_color_optical_frame: true
+
+    # ---- WHAT THE CAMERA SEES -------------------------------------------------------------
+    # *** DISABLED BY DEFAULT, AND THE TOPIC CHANGED. ***
+    #
+    # rviz_default_plugins/Image subscribes to sensor_msgs/Image ONLY -- it does not resolve
+    # image_transport plugins the way RViz1 did. This display was pointed at
+    # /camera/color/image_raw/compressed (a sensor_msgs/CompressedImage), which it can never
+    # render: the topic is real and healthy at 29.97 Hz, so nothing looks broken, the panel is just
+    # blank forever.
+    #
+    # It now names the raw topic, which WORKS on a wired link or on the NX itself. It ships
+    # DISABLED because raw colour is ~83 MB/s and will not cross a field wifi link -- enabling it
+    # there costs you the rest of the view. For the field, use the repo-root laptop view instead:
+    # scripts/laptop_dtp_viewer.sh opens rviz/dtp_viewer.rviz, whose "Person boxes" panel shows
+    # dtp_image_overlay's JPEG (boxes drawn on) decoded on the laptop by
+    # scripts/laptop_image_decode.py.
+    #
+    # NOT `ros2 run image_transport republish compressed raw`, which this comment used to suggest:
+    # on Humble it subscribes RELIABLE with no override, so it never matches the camera's
+    # best-effort topic and silently republishes nothing (checked 2026-09-13). It also needs
+    # compressed_image_transport, which ros-humble-desktop does not install.
+    - Class: rviz_default_plugins/Image
+      Name: Camera
+      Enabled: false
+      Topic:
+        Value: /camera/color/image_raw
+        Depth: 1
+        Durability Policy: Volatile
+        Reliability Policy: Best Effort
+      Max Value: 1
+      Min Value: 0
+      Normalize Range: true
+
+    # ---- ARBITRATED GOAL, AS SUPER RECEIVES IT --------------------------------------------
+    # Disabled by default because in Stage A nothing publishes here -- the goal goes to the shadow
+    # topic. Enable it for a live follow to see what actually reached the planner.
+    - Class: rviz_default_plugins/Pose
+      Name: Goal into SUPER
+      Enabled: false
+      Topic:
+        Value: /planning/follow_goal
+        Depth: 1
+        Durability Policy: Volatile
+        Reliability Policy: Best Effort
+      Shape: Arrow
+      Color: 255; 200; 60; 255
+      Shaft Length: 0.5
+      Shaft Radius: 0.04
+      Head Length: 0.2
+      Head Radius: 0.1
+
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+      Line color: 128; 128; 0
+
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Name: Orbit
+      # Looking down from behind at ~8 m: far enough to see the subject, the keep-out cylinder and
+      # the standoff goal together, which is the geometry an operator is actually judging.
+      Distance: 12
+      Pitch: 0.55
+      Yaw: 2.4
+      Focal Point:
+        X: 2
+        Y: 0
+        Z: 1
+      Target Frame: lidar_init
+    Saved:
+      - Class: rviz_default_plugins/Orbit
+        Name: Overhead
+        Distance: 16
+        Pitch: 1.4
+        Yaw: 3.14
+        Focal Point:
+          X: 2
+          Y: 0
+          Z: 0
+        Target Frame: lidar_init
+Window Geometry:
+  Height: 900
+  Width: 1500
+  Displays:
+    collapsed: false
+  Views:
+    collapsed: false
+  Camera:
+    collapsed: false

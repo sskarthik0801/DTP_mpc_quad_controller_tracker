@@ -1,0 +1,19 @@
+estimator preflight: listening 60 s -- keep the aircraft still, on the ground, where it will take off
+
+ESTIMATOR PREFLIGHT (G0.2)
+  [ ok ] E1 single publisher /livox/lidar            livox_lidar_publisher
+  [ ok ] E1 single publisher /livox/imu              livox_lidar_publisher
+  [ ok ] E1 single publisher /lidar_slam/odom        laser_mapping
+  [ ok ] E1 one livox_ros_driver2_node process       pid 46385
+  [FAIL] E1 one fastlio_mapping process              2 running (pids [50116, 50118]) -- kill the duplicate, then restart FAST-LIO: the one that survives may already have diverged
+  [FAIL] E2 FAST-LIO started after the Livox driver  needs exactly one of each (E1)
+  [ ok ] E3 odometry rate                            worst 10 s window 9.9 Hz
+  [ ok ] E3 odometry stamp gaps                      max 0.11 s
+  [ ok ] E4 odometry age                             p95 58 ms
+  [ ok ] E5 odometry near lidar_init origin          max |p| 0.05 m
+  [ ok ] E6 EKF2 position valid                      2998 samples, all valid
+  [ ok ] E6 |EKF2 - FRD(odom)|                       max 0.079 m
+  [ ok ] E7 no EKF2 resets                           none in 60 s
+  [ ok ] E8 odom bridge guard                        TRACKING reset_counter=1
+
+NO-GO: 2 failing check(s). Do not arm.

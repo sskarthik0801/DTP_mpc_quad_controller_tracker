@@ -1,0 +1,22 @@
+SPDX-License-Identifier: GPL-2.0-only
+
+Copyright (C) 2026 ideas-ad <adityaabhangusa@gmail.com>
+
+This repository's original integration code (the `super_bringup` package, scripts,
+and configuration) is licensed under the GNU General Public License version 2,
+to stay compatible with the upstream components it integrates (HKU-MaRS SUPER and
+FAST-LIO, both GPL-2.0).
+
+This program is free software; you can redistribute it and/or modify it under the
+terms of the GNU General Public License version 2 as published by the Free Software
+Foundation.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+Full text: https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
+
+NOTE: This repository does NOT vendor the third-party sources (SUPER, FAST-LIO,
+livox_ros_driver2, Livox-SDK2). They are fetched at pinned commits by scripts/setup.sh
+and remain under their own licenses.

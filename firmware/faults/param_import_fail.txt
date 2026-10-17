@@ -1,0 +1,35 @@
+HW arch: ARK_FPV
+HW type: ARKFPV
+HW FMUM ID: 0x000
+HW BASE ID: 0x000
+PX4 git-hash: 54f0455ffcd755534539a7cf33a09a20bf71d29d
+PX4 version: Release 1.16.2 (17826559)
+OS: NuttX
+OS version: Release 12.12.0 (202113279)
+OS git-hash: 886acbbdb4f061e5c0ce1a76afbcfa7cb7df9849
+Build datetime: Apr 22 2026 12:20:05
+Build uri: localhost
+Build variant: default
+Toolchain: GNU GCC, 10.2.1 20201103 (release)
+PX4GUID: 0006000000003638393035345107004c002a
+MCU: STM32H7[4|5]xxx, rev. V
+INFO [init] formatting /dev/mmcsd0
+INFO [init] card formatted
+ERROR [bsondump] open '/fs/mtd_caldata' failed (2)
+New /fs/mtd_caldata size is:
+ERROR [bsondump] open '/fs/mtd_caldata' failed (2)
+ERROR [param] importing failed (-1)
+ERROR [init] param import failed
+ERROR [bsondump] open '/fs/mtd_params' failed (2)
+INFO  [parameters] summary: 0/1607 (used/total)
+INFO  [parameters] storage array: 0/1607 elements (256 bytes total)
+INFO  [parameters] storage array (custom defaults): 0/1607 elements (256 bytes total)
+INFO  [parameters] auto save: on
+param: export: 0 events, 0us elapsed, 0.00us avg, min 0us max 0us 0.000us rms
+param: find: 0 events
+param: get: 0 events
+param: set: 0 events, 0us elapsed, 0.00us avg, min 0us max 0us 0.000us rms
+dmesg [46:100]
+INFO  [param] selected parameter backup file /fs/microsd/parameters_backup.bson
+Board architecture defaults: /etc/init.d/rc.board_arch_defaults
+Board defaults: /etc/init.d/rc.board_defaults

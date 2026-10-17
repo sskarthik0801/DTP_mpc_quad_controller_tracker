@@ -1,0 +1,13 @@
+diff --git a/boards/ark/fpv/nuttx-config/nsh/defconfig b/boards/ark/fpv/nuttx-config/nsh/defconfig
+index e008f43be1..902b78f734 100644
+--- a/boards/ark/fpv/nuttx-config/nsh/defconfig
++++ b/boards/ark/fpv/nuttx-config/nsh/defconfig
+@@ -249,7 +249,7 @@ CONFIG_UART7_BAUD=57600
+ CONFIG_UART7_IFLOWCONTROL=y
+ CONFIG_UART7_OFLOWCONTROL=y
+ CONFIG_UART7_RXBUFSIZE=600
+-CONFIG_UART7_RXDMA=y
++# CONFIG_UART7_RXDMA is not set
+ CONFIG_UART7_TXBUFSIZE=3000
+ CONFIG_UART7_TXDMA=y
+ CONFIG_USART1_BAUD=57600

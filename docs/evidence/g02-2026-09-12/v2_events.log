@@ -1,0 +1,14 @@
+1789271435.22 start run.sh
+1789271467.67 after run.sh: drivers=1 fastlio=1 fsm=1 lidar_pubs=0
+1789271467.68 T1 second run.sh
+1789271470.40 second run.sh exit=1 :: REFUSING to start: livox_ros_driver2_node is already running (pid 55827 ).
+1789271470.40 T2 dtp sensors.launch.py camera:=false xfer_format:=0
+1789271487.88 during sensors.launch: drivers=1 fastlio=1 fsm=1 lidar_pubs=0 :: NOT starting our Livox driver
+1789271490.89 T3 dtp super.launch.py config_name:=click_smooth_ros2.yaml require_follow_path:=false
+1789271508.63 during super.launch: drivers=1 fastlio=1 fsm=1 lidar_pubs=0 :: 2 refusals
+1789271511.64 T4 deployed bridge via ros2 run, FAST-LIO restarted via ros2 run
+1789271563.07 after restart: drivers=1 fastlio=1 fsm=1 lidar_pubs=0 :: guard state -> TRACKING reset_counter=1
+1789271563.08 T5 estimator preflight (60 s)
+1789271626.16 preflight exit=0
+1789271626.17 teardown
+1789271658.41 done: drivers=0 fastlio=0 fsm=0 lidar_pubs=0

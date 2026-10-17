@@ -1,0 +1,28 @@
+diff --git a/boards/ark/fpv/default.px4board b/boards/ark/fpv/default.px4board
+index e7437b0cc7..eb956275c8 100644
+--- a/boards/ark/fpv/default.px4board
++++ b/boards/ark/fpv/default.px4board
+@@ -21,6 +21,7 @@ CONFIG_DRIVERS_IMU_MURATA_SCH16T=y
+ CONFIG_COMMON_LIGHT=y
+ CONFIG_COMMON_MAGNETOMETER=y
+ CONFIG_DRIVERS_OSD_MSP_OSD=y
++CONFIG_DRIVERS_POWER_MONITOR_INA238=y
+ CONFIG_DRIVERS_PWM_OUT=y
+ CONFIG_COMMON_RC=y
+ CONFIG_DRIVERS_UAVCAN=y
+diff --git a/boards/ark/fpv/init/rc.board_sensors b/boards/ark/fpv/init/rc.board_sensors
+index 896b9ffd7d..e832642c30 100644
+--- a/boards/ark/fpv/init/rc.board_sensors
++++ b/boards/ark/fpv/init/rc.board_sensors
+@@ -16,3 +16,11 @@ iis2mdc -R 0 -I -b 4 start
+ 
+ # Internal Baro on I2C
+ bmp388 -I -b 2 start
++
++# Digital power monitor on the external I2C bus (GPS/I2C port), e.g. the
++# ARK 12S Payload Power Module. -t 1 binds it to the BAT1_* params; -k keeps
++# retrying so the driver survives starting before the pack is plugged in.
++if param compare SENS_EN_INA238 1
++then
++	ina238 -X -b 1 -t 1 -k start
++fi

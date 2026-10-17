@@ -1,0 +1,549 @@
+diff --git a/rog_map/include/rog_map/prob_map.h b/rog_map/include/rog_map/prob_map.h
+index db97e15..9285a12 100755
+--- a/rog_map/include/rog_map/prob_map.h
++++ b/rog_map/include/rog_map/prob_map.h
+@@ -99,7 +99,45 @@ namespace rog_map {
+ 
+         void updateProbMap(const PointCloud &cloud, const Pose &pose);
+ 
++        /* M5.3a (DTP) target-point filter.
++         *
++         * A vertical cylinder around the followed person, in the map frame, applied to ONE scan.
++         * Inside it that scan inserts NO hits and NO misses:
++         *  - no hits, so the person never becomes occupied cells that outlive them. One hit takes a
++         *    cell from unknown to occupied (l_hit > l_occ), and from p_max it then needs tens of clean
++         *    rays to clear -- a subject walking away leaves exactly those cells on the camera's line
++         *    of sight;
++         *  - no misses, so a tube or trunk the subject stands next to is not eroded by grazing rays
++         *    that the person's own (now dropped) hits would otherwise have cancelled in that frame.
++         * Rays to the dropped points are still cast up to the cylinder, so the free space between the
++         * sensor and the person -- the line of sight the follower needs -- is still cleared.
++         *
++         * A cell belongs to the cylinder when its CENTRE does. Only updateProbMap() honours it;
++         * updateOccPointCloud() (the PCD path) does not. */
++        struct TargetExclusion {
++            bool active{false};
++            double cx{0.0}, cy{0.0}, z_min{0.0}, z_max{0.0}, radius{0.0};
++        };
++
++        struct TargetExclusionStats {
++            int hits_dropped{0};
++            int misses_masked{0};
++        };
++
++        void updateProbMap(const PointCloud &cloud, const Pose &pose, const TargetExclusion &exclusion);
++
++        TargetExclusionStats getLastTargetExclusionStats() const {
++            return last_exclusion_stats_;
++        }
++
+     protected:
++        TargetExclusion frame_exclusion_{};
++        TargetExclusionStats last_exclusion_stats_{};
++
++        bool cellInsideExclusion(const Vec3i &id_g) const;
++
++        bool segmentMayCrossExclusion(const Vec3f &a, const Vec3f &b) const;
++
+         rog_map::Config cfg_;
+         InfMap::Ptr inf_map_;
+         FreeCntMap::Ptr fcnt_map_;
+diff --git a/rog_map/include/rog_map/rog_map_core/config.hpp b/rog_map/include/rog_map/rog_map_core/config.hpp
+index a2e33f0..2417fd9 100755
+--- a/rog_map/include/rog_map/rog_map_core/config.hpp
++++ b/rog_map/include/rog_map/rog_map_core/config.hpp
+@@ -211,6 +211,25 @@ namespace rog_map {
+             loader.LoadParam(name_space + "/virtual_ground_height", virtual_ground_height, -0.1);
+             loader.LoadParam(name_space + "/virtual_ceil_height", virtual_ceil_height, -0.1);
+ 
++            // M5.3a (DTP) -- target-point filter: the followed person's own returns are kept out of
++            // the map, so a walking subject does not stamp a trail of occupied cells behind them.
++            // See ProbMap::TargetExclusion. Off by default, so upstream configs are unaffected.
++            loader.LoadParam(name_space + "/target_exclusion/enable", target_exclusion_en, false);
++            loader.LoadParam(name_space + "/target_exclusion/topic", target_exclusion_topic,
++                             string("/dtp/follow_target"));
++            loader.LoadParam(name_space + "/target_exclusion/radius", target_exclusion_radius, 0.6);
++            loader.LoadParam(name_space + "/target_exclusion/z_below", target_exclusion_z_below, 1.0);
++            loader.LoadParam(name_space + "/target_exclusion/z_above", target_exclusion_z_above, 1.3);
++            loader.LoadParam(name_space + "/target_exclusion/max_age", target_exclusion_max_age, 0.5);
++            loader.LoadParam(name_space + "/target_exclusion/max_speed", target_exclusion_max_speed, 3.0);
++            if (target_exclusion_en &&
++                !(target_exclusion_radius > 0.0 && target_exclusion_z_below >= 0.0 &&
++                  target_exclusion_z_above >= 0.0 && target_exclusion_max_age > 0.0 &&
++                  target_exclusion_max_speed > 0.0)) {
++                throw std::invalid_argument("rog_map/target_exclusion: radius, max_age and max_speed must be "
++                                            "positive, z_below and z_above non-negative");
++            }
++
+             resetMapSize();
+ 
+             /// Probabilistic Update
+@@ -346,6 +365,12 @@ namespace rog_map {
+         double unk_thresh{};
+         double map_sliding_thresh{};
+ 
++        /* M5.3a (DTP) target-point filter */
++        bool target_exclusion_en{false};
++        string target_exclusion_topic{};
++        double target_exclusion_radius{}, target_exclusion_z_below{}, target_exclusion_z_above{};
++        double target_exclusion_max_age{}, target_exclusion_max_speed{};
++
+         void resetMapSize() {
+             int inflation_ratio = ceil(inflation_resolution / resolution);
+ 
+diff --git a/rog_map/include/rog_map_ros/rog_map_ros2.hpp b/rog_map/include/rog_map_ros/rog_map_ros2.hpp
+index 2131988..7fb3ed2 100644
+--- a/rog_map/include/rog_map_ros/rog_map_ros2.hpp
++++ b/rog_map/include/rog_map_ros/rog_map_ros2.hpp
+@@ -43,6 +43,7 @@
+ #include <sensor_msgs/msg/point_cloud2.hpp>
+ #include <tf2_ros/transform_broadcaster.h>
+ #include <visualization_msgs/msg/marker_array.hpp>
++#include <visualization_msgs/msg/marker.hpp>
+ 
+ #include <rog_map/rog_map.h>
+ #include <super_utils/color_msg_utils.hpp>
+@@ -80,10 +81,93 @@ namespace rog_map {
+             int unfinished_frame_cnt{0};
+             Pose pc_pose;
+             PointCloud pc;
++            TargetExclusion pc_exclusion;       // M5.3a: resolved at the scan's own stamp
++            builtin_interfaces::msg::Time pc_stamp;
+             rclcpp::TimerBase::SharedPtr update_timer;
+             mutex updete_lock;
+         } rc_;
+ 
++        /* M5.3a (DTP) target-point filter -- see ProbMap::TargetExclusion.
++         * The newest SEEN observation of the followed person, set by setTargetObservation() from
++         * whoever owns the target topic (fsm_ros2 here, so rog_map itself needs no dtp_msgs). */
++        struct TargetExclusionState {
++            mutex mtx;
++            bool valid{false};
++            Vec3f p{Vec3f::Zero()}, v{Vec3f::Zero()};
++            double stamp{0.0};
++            // Counted per scan by cloudCallback(), guarded by rc_.updete_lock.
++            int scans_no_target{0}, scans_stale{0};
++            // Accumulated over the 5 s log period, update thread only.
++            int scans_filtered{0}, period_no_target{0}, period_stale{0};
++            long hits_dropped{0}, misses_masked{0};
++            double last_log_t{0.0};
++            bool marker_shown{false};
++            rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr marker_pub;
++        } te_;
++
++        enum class ExclusionResult { FILTERED, NO_TARGET, STALE };
++
++        // The cylinder for a scan stamped t_scan. The observation is extrapolated along its own
++        // velocity by (t_scan - t_obs): /dtp/follow_target reaches us ~0.27 s after its stamp and a
++        // scan ~0.05 s after its own, so the newest target describes the person ~0.29 s (p50) before
++        // the scan being inserted. Measured on ~/dtp_datasets/20260909_closedloop_run5 by
++        // drone-dtp/scripts/target_filter_study.py: this centre is 0.18 m (p50) / 0.52 m (p95) from
++        // the person's own LiDAR returns, against 0.23 / 0.56 m unextrapolated and 0.24 / 0.55 m for
++        // the CTRV forecast. Older than max_age, or no observation at all: NO filter -- a person left
++        // in the map is a trail, a cylinder at a guessed position erases whatever is really there.
++        ExclusionResult resolveTargetExclusion(double t_scan, TargetExclusion& out) {
++            out = TargetExclusion{};
++            std::lock_guard<mutex> lck(te_.mtx);
++            if (!te_.valid) {
++                return ExclusionResult::NO_TARGET;
++            }
++            const double age = t_scan - te_.stamp;
++            if (!(std::abs(age) <= cfg_.target_exclusion_max_age)) {
++                return ExclusionResult::STALE;
++            }
++            const Vec3f c = te_.p + te_.v * age;
++            out.active = true;
++            out.cx = c.x();
++            out.cy = c.y();
++            out.z_min = c.z() - cfg_.target_exclusion_z_below;
++            out.z_max = c.z() + cfg_.target_exclusion_z_above;
++            out.radius = cfg_.target_exclusion_radius;
++            return ExclusionResult::FILTERED;
++        }
++
++        void publishTargetExclusion(const TargetExclusion& ex, const builtin_interfaces::msg::Time& stamp) {
++            if (!te_.marker_pub || (!ex.active && !te_.marker_shown)) {
++                return;
++            }
++            visualization_msgs::msg::Marker m;
++            m.header.frame_id = cfg_.frame_id;
++            // The SCAN's stamp, so a bag can join each cylinder to the scan it filtered.
++            m.header.stamp = stamp;
++            m.ns = "target_exclusion";
++            m.id = 0;
++            if (!ex.active) {
++                m.action = visualization_msgs::msg::Marker::DELETE;
++                te_.marker_pub->publish(m);
++                te_.marker_shown = false;
++                return;
++            }
++            m.action = visualization_msgs::msg::Marker::ADD;
++            m.type = visualization_msgs::msg::Marker::CYLINDER;
++            m.pose.position.x = ex.cx;
++            m.pose.position.y = ex.cy;
++            m.pose.position.z = 0.5 * (ex.z_min + ex.z_max);
++            m.pose.orientation.w = 1.0;
++            m.scale.x = 2.0 * ex.radius;
++            m.scale.y = 2.0 * ex.radius;
++            m.scale.z = ex.z_max - ex.z_min;
++            m.color.r = 1.0f;
++            m.color.g = 0.0f;
++            m.color.b = 1.0f;
++            m.color.a = 0.35f;
++            te_.marker_pub->publish(m);
++            te_.marker_shown = true;
++        }
++
+         void odomCallback(const nav_msgs::msg::Odometry::SharedPtr odom_msg) {
+             updateRobotState(std::make_pair(Vec3f(odom_msg->pose.pose.position.x,
+                                                   odom_msg->pose.pose.position.y,
+@@ -120,8 +204,25 @@ namespace rog_map {
+             }
+             PointCloud temp_pc;
+             pcl::fromROSMsg(*cloud_msg, temp_pc);
++            TargetExclusion exclusion;
++            ExclusionResult exclusion_result = ExclusionResult::NO_TARGET;
++            if (cfg_.target_exclusion_en) {
++                exclusion_result = resolveTargetExclusion(rclcpp::Time(cloud_msg->header.stamp).seconds(),
++                                                          exclusion);
++            }
+             rc_.updete_lock.lock();
+             rc_.pc = temp_pc;
++            rc_.pc_exclusion = exclusion;
++            rc_.pc_stamp = cloud_msg->header.stamp;
++            if (cfg_.target_exclusion_en) {
++                // counted here, where the decision is made; read and reset by updateCallback()
++                if (exclusion_result == ExclusionResult::NO_TARGET) {
++                    te_.scans_no_target++;
++                }
++                else if (exclusion_result == ExclusionResult::STALE) {
++                    te_.scans_stale++;
++                }
++            }
+             rc_.pc_pose = std::make_pair(robot_state_.p, robot_state_.q);
+             rc_.unfinished_frame_cnt++;
+             map_empty_ = false;
+@@ -150,18 +251,66 @@ namespace rog_map {
+             }
+             static PointCloud temp_pc;
+             static Pose temp_pose;
++            static TargetExclusion temp_exclusion;
++            static builtin_interfaces::msg::Time temp_stamp;
++            int no_target = 0, stale = 0;
+ 
+             rc_.updete_lock.lock();
+             temp_pc = rc_.pc;
+             temp_pose = rc_.pc_pose;
++            temp_exclusion = rc_.pc_exclusion;
++            temp_stamp = rc_.pc_stamp;
+             rc_.unfinished_frame_cnt = 0;
++            if (cfg_.target_exclusion_en) {
++                no_target = te_.scans_no_target;
++                stale = te_.scans_stale;
++                te_.scans_no_target = 0;
++                te_.scans_stale = 0;
++            }
+             rc_.updete_lock.unlock();
+ 
+-            updateProbMap(temp_pc, temp_pose);
++            if (!cfg_.target_exclusion_en) {
++                updateProbMap(temp_pc, temp_pose);
++            }
++            else {
++                updateProbMap(temp_pc, temp_pose, temp_exclusion);
++                logTargetExclusion(temp_exclusion, no_target, stale);
++                publishTargetExclusion(temp_exclusion, temp_stamp);
++            }
+ 
+             writeTimeConsumingToLog(time_log_file_);
+         }
+ 
++        void logTargetExclusion(const TargetExclusion& ex, int no_target, int stale) {
++            // Update thread only from here on: the per-scan counts were handed over under the lock.
++            te_.period_no_target += no_target;
++            te_.period_stale += stale;
++            if (ex.active) {
++                const auto st = getLastTargetExclusionStats();
++                te_.scans_filtered++;
++                te_.hits_dropped += st.hits_dropped;
++                te_.misses_masked += st.misses_masked;
++            }
++            const double now = nh_->get_clock()->now().seconds();
++            if (now - te_.last_log_t < 5.0) {
++                return;
++            }
++            // Only speak when there was a target to speak about, or one went stale -- a stack idling
++            // with no lock should not print this every 5 s.
++            if (te_.scans_filtered > 0 || te_.period_stale > 0) {
++                std::cout << color_text::CYAN << " -- [ROG] target exclusion: filtered " << te_.scans_filtered
++                          << " scans (" << te_.hits_dropped << " hits dropped, " << te_.misses_masked
++                          << " misses masked); unfiltered: target stale " << te_.period_stale
++                          << ", no target " << te_.period_no_target << RESET << std::endl;
++            }
++            te_.last_log_t = now;
++            te_.scans_filtered = 0;
++            te_.hits_dropped = 0;
++            te_.misses_masked = 0;
++            te_.period_no_target = 0;
++            te_.period_stale = 0;
++        }
++
+         void vizCallback() {
+             if (!cfg_.visualization_en) {
+                 return;
+@@ -311,6 +460,21 @@ namespace rog_map {
+     public:
+         typedef shared_ptr<ROGMapROS> Ptr;
+ 
++        // M5.3a (DTP): the followed person as last SEEN, in the map frame. The caller decides what
++        // counts as seen (fsm_ros2: a locked, uncoasted, unheld /dtp/follow_target). Non-finite or
++        // implausibly fast input is ignored, leaving the previous observation to age out.
++        void setTargetObservation(const Vec3f& p, const Vec3f& v, const double& stamp_s) {
++            if (!cfg_.target_exclusion_en || !p.allFinite() || !v.allFinite() || !std::isfinite(stamp_s) ||
++                v.head(2).norm() > cfg_.target_exclusion_max_speed) {
++                return;
++            }
++            std::lock_guard<mutex> lck(te_.mtx);
++            te_.p = p;
++            te_.v = Vec3f(v.x(), v.y(), 0.0);  // nothing upstream estimates a person's vertical speed
++            te_.stamp = stamp_s;
++            te_.valid = true;
++        }
++
+         ROGMapROS(const rclcpp::Node::SharedPtr nh, const std::string& cfg_path): nh_(nh) {
+             // TODO: The current implementation uses a lenient QoS configuration for message transmission.
+             const rclcpp::QoS qos(rclcpp::QoS(1)
+@@ -353,6 +517,17 @@ namespace rog_map {
+ 
+             vm_.mkr_arr_pub = nh_->create_publisher<visualization_msgs::msg::MarkerArray>("rog_map/map_bound", qos);
+ 
++            if (cfg_.target_exclusion_en) {
++                // Always published while filtering (not only when visualization is on): it is the
++                // record, in a bag, of which scans had the person removed and where.
++                te_.marker_pub = nh_->create_publisher<visualization_msgs::msg::Marker>(
++                    "rog_map/target_exclusion", qos);
++                std::cout << color_text::CYAN << " -- [ROG] TARGET EXCLUSION ENABLE: r " << cfg_.target_exclusion_radius
++                          << " m, z [-" << cfg_.target_exclusion_z_below << ", +" << cfg_.target_exclusion_z_above
++                          << "] m, max_age " << cfg_.target_exclusion_max_age << " s -- the followed person is kept "
++                          "out of this map; the planner will not avoid them" << RESET << std::endl;
++            }
++
+             if (cfg_.ros_callback_en) {
+                 rc_.odom_me_cbk_group = nh_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+                 rc_.cloud_me_cbk_group = nh_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+diff --git a/rog_map/src/rog_map/prob_map.cpp b/rog_map/src/rog_map/prob_map.cpp
+index d314e2f..22a579e 100755
+--- a/rog_map/src/rog_map/prob_map.cpp
++++ b/rog_map/src/rog_map/prob_map.cpp
+@@ -374,6 +374,47 @@ void ProbMap::updateProbMap(const PointCloud& cloud, const Pose& pose) {
+     }
+ }
+ 
++void ProbMap::updateProbMap(const PointCloud& cloud, const Pose& pose, const TargetExclusion& exclusion) {
++    // Scoped to this one scan: reset on the way out, so a scan that arrives without a target can
++    // never inherit the previous scan's cylinder.
++    frame_exclusion_ = exclusion;
++    updateProbMap(cloud, pose);
++    frame_exclusion_ = TargetExclusion{};
++}
++
++bool ProbMap::cellInsideExclusion(const Vec3i& id_g) const {
++    Vec3f c;
++    globalIndexToPos(id_g, c);
++    if (c.z() < frame_exclusion_.z_min || c.z() > frame_exclusion_.z_max) {
++        return false;
++    }
++    const double dx = c.x() - frame_exclusion_.cx;
++    const double dy = c.y() - frame_exclusion_.cy;
++    return dx * dx + dy * dy <= frame_exclusion_.radius * frame_exclusion_.radius;
++}
++
++bool ProbMap::segmentMayCrossExclusion(const Vec3f& a, const Vec3f& b) const {
++    // Conservative pre-test, so the per-cell test runs only on the few rays that pass near the
++    // person: a ray can visit a cell whose centre is inside the cylinder while itself passing up to
++    // half a cell diagonal (horizontally) or half a cell (vertically) outside it.
++    const double half = 0.5 * cfg_.resolution;
++    if (std::max(a.z(), b.z()) < frame_exclusion_.z_min - half ||
++        std::min(a.z(), b.z()) > frame_exclusion_.z_max + half) {
++        return false;
++    }
++    const double reach = frame_exclusion_.radius + half * M_SQRT2 + 1e-6;
++    const double abx = b.x() - a.x(), aby = b.y() - a.y();
++    const double len2 = abx * abx + aby * aby;
++    double t = 0.0;
++    if (len2 > 1e-12) {
++        t = ((frame_exclusion_.cx - a.x()) * abx + (frame_exclusion_.cy - a.y()) * aby) / len2;
++        t = std::min(1.0, std::max(0.0, t));
++    }
++    const double dx = a.x() + t * abx - frame_exclusion_.cx;
++    const double dy = a.y() + t * aby - frame_exclusion_.cy;
++    return dx * dx + dy * dy <= reach * reach;
++}
++
+ GridType ProbMap::getGridType(Vec3i& id_g) const {
+     if (id_g.z() <= sc_.virtual_ground_height_id_g ||
+         id_g.z() >= sc_.virtual_ceil_height_id_g - sc_.safe_margin_i) {
+@@ -686,6 +727,8 @@ void ProbMap::raycastProcess(const PointCloud& input_cloud, const Vec3f& cur_odo
+     // new version of raycasting process
+     auto raycasting_cloud = vec_Vec3f{};
+     raycasting_cloud.reserve(cloud_in_size);
++    const bool exclusion_on = frame_exclusion_.active;
++    last_exclusion_stats_ = TargetExclusionStats{};
+ 
+     // 1) process all non-inf points, update occupied probability
+     int temperol_cnt{0};
+@@ -712,6 +755,10 @@ void ProbMap::raycastProcess(const PointCloud& input_cloud, const Vec3f& cur_odo
+                     continue;
+                 }
+                 posToGlobalIndex(p, pt_id_g);
++                if (exclusion_on && cellInsideExclusion(pt_id_g)) {
++                    last_exclusion_stats_.hits_dropped++;
++                    continue;
++                }
+                 insertUpdateCandidate(pt_id_g, true);
+                 // record cache box size;
+                 raycast_data_.cache_box_min = raycast_data_.cache_box_min.cwiseMin(p);
+@@ -770,7 +817,14 @@ void ProbMap::raycastProcess(const PointCloud& input_cloud, const Vec3f& cur_odo
+ 
+         if (update_hit) {
+             posToGlobalIndex(p, pt_id_g);
+-            insertUpdateCandidate(pt_id_g, true);
++            // M5.3a: a return from inside the target cylinder is not a hit. Its ray is still kept
++            // (pushed above), so the space in front of the person is cleared as usual.
++            if (exclusion_on && cellInsideExclusion(pt_id_g)) {
++                last_exclusion_stats_.hits_dropped++;
++            }
++            else {
++                insertUpdateCandidate(pt_id_g, true);
++            }
+         }
+     }
+ 
+@@ -778,6 +832,7 @@ void ProbMap::raycastProcess(const PointCloud& input_cloud, const Vec3f& cur_odo
+         // 4) process all inf points, updae free probability
+         for (const auto& p : raycasting_cloud) {
+             Vec3f raycast_start = (p - cur_odom).normalized() * cfg_.raycast_range_min + cur_odom;
++            const bool check_exclusion = exclusion_on && segmentMayCrossExclusion(raycast_start, p);
+             raycast_data_.raycaster.setInput(raycast_start, p);
+             Vec3f ray_pt;
+             while (raycast_data_.raycaster.step(ray_pt)) {
+@@ -786,6 +841,11 @@ void ProbMap::raycastProcess(const PointCloud& input_cloud, const Vec3f& cur_odo
+                 if (!insideLocalMap(cur_ray_id_g)) {
+                     break;
+                 }
++                // M5.3a: no misses inside the target cylinder either -- see ProbMap::TargetExclusion.
++                if (check_exclusion && cellInsideExclusion(cur_ray_id_g)) {
++                    last_exclusion_stats_.misses_masked++;
++                    continue;
++                }
+                 insertUpdateCandidate(cur_ray_id_g, false);
+             }
+         }
+diff --git a/super_planner/config/follow_test_ros2.yaml b/super_planner/config/follow_test_ros2.yaml
+index 9db46ff..a940686 100644
+--- a/super_planner/config/follow_test_ros2.yaml
++++ b/super_planner/config/follow_test_ros2.yaml
+@@ -208,3 +208,31 @@ rog_map:
+     # in all, 1.0 is more aggressive while 0.0 is more conservative.
+     unk_thresh: 1.0
+ 
++  # M5.3a (DTP) target-point filter (docs/m5-m6-plan.md M5.3 item 1). While the followed person is
++  # SEEN (locked, not coasted, not a held frame) their own LiDAR returns are kept out of this map:
++  # inside a vertical cylinder around them a scan adds no hits and no misses, so they leave no trail
++  # of occupied cells and do not erode an obstacle they stand next to. Rays up to the cylinder still
++  # clear the line of sight in front of them.
++  # CONSEQUENCE: the planner does NOT avoid the followed person. What keeps the drone off them is
++  # follow_planner's standoff (>= 2.5 m) and command_mux's proximity veto, which reads /dtp/targets
++  # directly. Never enable this in a config flown without that stack (click/NAV configs).
++  target_exclusion:
++    enable: false
++    topic: "/dtp/follow_target"
++    # Numbers from drone-dtp/scripts/target_filter_study.py on ~/dtp_datasets/20260909_closedloop_run5
++    # (bench, stationary rig, subject p50 0.37 m/s), centre = position + velocity * (t_scan - t_target):
++    #  - centre to the person's LiDAR median: 0.18 m p50, 0.52 m p95;
++    #  - share of the person's points inside, p5 over scans: r 0.5 -> 0.41, 0.6 -> 0.71, 0.7 -> 0.92.
++    #    One escaped point is one occupied cell (a single hit crosses p_occ), so coverage matters.
++    radius: 0.6
++    # The target's z is perception's torso sample at 0.65 of the box height FROM THE TOP (near the
++    # waist), not the torso centre: the person's returns span -0.20 (p1) .. +1.18 m (p99) around it.
++    z_below: 1.0
++    z_above: 1.3
++    # Newest seen observation vs the scan's stamp: p50 0.29 s, p95 0.34 s. Older -> no filter.
++    # Not longer: past 0.4 s the extrapolated centre degrades fast (offset p50 0.17 -> 0.34-0.47 m,
++    # coverage p5 at r 0.6 0.71-0.79 -> 0.43 and then 0.00). Holds are covered only up to this.
++    max_age: 0.5
++    # A velocity above this is treated as a bad estimate and the observation is ignored.
++    max_speed: 3.0
++
+diff --git a/super_planner/include/ros_interface/ros2/fsm_ros2.hpp b/super_planner/include/ros_interface/ros2/fsm_ros2.hpp
+index 7d97ea4..5e90c20 100644
+--- a/super_planner/include/ros_interface/ros2/fsm_ros2.hpp
++++ b/super_planner/include/ros_interface/ros2/fsm_ros2.hpp
+@@ -35,6 +35,7 @@
+ #include "geometry_msgs/msg/pose_stamped.hpp"
+ #include "geometry_msgs/msg/point_stamped.hpp"
+ #include "dtp_msgs/msg/goal_status.hpp"
++#include "dtp_msgs/msg/target.hpp"
+ #include "nav_msgs/msg/path.hpp"
+ #include "nav_msgs/msg/odometry.hpp"
+ #include "mars_quadrotor_msgs/msg/position_command.hpp"
+@@ -53,6 +54,9 @@ namespace fsm {
+         rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr follow_goal_sub_;
+         rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr yaw_target_sub_;
+         rclcpp::Publisher<dtp_msgs::msg::GoalStatus>::SharedPtr goal_status_pub_;
++        // M5.3a (DTP) target-point filter input; created only when rog_map/target_exclusion/enable
++        rclcpp::Subscription<dtp_msgs::msg::Target>::SharedPtr target_exclusion_sub_;
++        rclcpp::CallbackGroup::SharedPtr target_exclusion_cbk_group_;
+ 
+         rclcpp::TimerBase::SharedPtr execution_timer_, replan_timer_, cmd_timer_;
+         rclcpp::CallbackGroup::SharedPtr exec_cbk_group_, replan_cbk_group_, cmd_cbk_group_, goal_cbk_group_;
+@@ -319,6 +323,26 @@ namespace fsm {
+             goal_status_pub_->publish(out);
+         }
+ 
++        // M5.3a -- feed the target-point filter ONLY with frames where the person was actually SEEN.
++        //  * missed_frames > 0 is target_manager COASTING: the position is a CTRV forecast, and a
++        //    person hidden behind something is exactly where the occluder is. Filtering there would
++        //    erase the trunk the classifier (M6) needs to see.
++        //  * a forecast of fewer than 2 points is perception's HELD frame: the last position,
++        //    republished under the new stamp after the range gate rejected this frame's torso
++        //    sample. Extrapolating it from the new stamp would place the cylinder behind a walking
++        //    person by the length of the hold. (A target beyond the predictor's depth gate looks the
++        //    same and is skipped too -- it is > 10 m away, where a trail does not matter.)
++        // Skipped frames leave the previous observation in place to age out after max_age.
++        void targetExclusionCallback(const dtp_msgs::msg::Target::SharedPtr msg) {
++            if (!msg->is_locked_target || msg->missed_frames > 0 || msg->predicted_path.size() < 2) {
++                return;
++            }
++            map_ptr_->setTargetObservation(
++                    Vec3f{msg->position.x, msg->position.y, msg->position.z},
++                    Vec3f{msg->velocity.x, msg->velocity.y, msg->velocity.z},
++                    rclcpp::Time(msg->header.stamp).seconds());
++        }
++
+         // The point the heading should track under YAW_TO_TARGET (the followed human).
+         void yawTargetCallback(const geometry_msgs::msg::PointStamped::SharedPtr msg) {
+             setYawTarget(Vec3f{msg->point.x, msg->point.y, msg->point.z},
+@@ -375,6 +399,22 @@ namespace fsm {
+                 cmd_cnt++;
+             }
+ 
++            // M5.3a -- target-point filter. Its parameters live with the map (rog_map/target_exclusion);
++            // only the subscription is here, so rog_map itself needs no dtp_msgs.
++            const auto map_cfg = map_ptr_->getMapConfig();
++            if (map_cfg.target_exclusion_en) {
++                target_exclusion_cbk_group_ = nh_->create_callback_group(
++                        rclcpp::CallbackGroupType::MutuallyExclusive);
++                rclcpp::SubscriptionOptions so;
++                so.callback_group = target_exclusion_cbk_group_;
++                // BEST_EFFORT (qos above): target_manager publishes /dtp/follow_target best-effort, and
++                // a RELIABLE subscription to a best-effort publisher never matches and never errors.
++                target_exclusion_sub_ = nh_->create_subscription<dtp_msgs::msg::Target>(
++                        map_cfg.target_exclusion_topic, qos,
++                        std::bind(&FsmRos2::targetExclusionCallback, this, std::placeholders::_1), so);
++                cout << YELLOW << " -- [Fsm] TARGET EXCLUSION on " << map_cfg.target_exclusion_topic << RESET << endl;
++            }
++
+             // Upstream required EXACTLY one goal source. With a mux architecture (D10) more than one
+             // ingestion path is legitimate -- click for bench testing, follow for the DTP loop -- so
+             // this now only rejects the genuinely broken case of having none at all.

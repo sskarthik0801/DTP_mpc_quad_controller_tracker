@@ -1,0 +1,885 @@
+%==============================================================================
+%  DRAFT -- ICRA / RA-L submission.
+%  Occlusion-aware marker-free human following for MAVs in forests.
+%
+%  THESIS (from the annotated bibliography, 2026-09-10):
+%    Every prior aerial-tracking system treats target loss as ONE undifferentiated
+%    event and answers it with ONE policy: extrapolate and keep flying.  We
+%    classify the CAUSE of loss against the onboard-built 3-D map -- occluded by
+%    known geometry vs. genuinely lost -- and condition planner behaviour on that
+%    classification.  The geometry needed is already computed for free as a
+%    by-product of obstacle avoidance.
+%
+%  STATUS 2026-09-10: skeleton + method + system characterization.  NO FLIGHT
+%  RESULTS.  Conventions:
+%      \tbd{...}   red    -- not written or not measured yet
+%      \bench{...} blue   -- a REAL measurement, but bench/handheld, NEVER in flight
+%      \note{...}  gray   -- drafting instruction to ourselves; delete before submit
+%
+%  BUILD: Overleaf / pdfLaTeX.  Never compiled -- there is no TeX toolchain on the
+%  aircraft's Jetson.  Expect first-build fixes.
+%
+%  CLASS: IEEEtran conference.  For ICRA's own template swap in
+%      \documentclass[letterpaper, 10pt, conference]{ieeeconf}
+%  and drop \IEEEoverridecommandlockouts.  ICRA = 6 pages + up to 2 paid.
+%  RA-L = 8 pages.  This draft is written to the 8-page shape; cut Sec. VIII
+%  first if targeting ICRA at 6.
+%==============================================================================
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{cite}
+\usepackage{siunitx}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{multirow}
+\usepackage[hidelinks]{hyperref}
+\usepackage{url}
+
+% --- drafting aids.  Strip the color (or the macros) before submitting. -------
+\newcommand{\tbd}[1]{\textcolor{red}{\textbf{[TBD: #1]}}}
+\newcommand{\bench}[1]{\textcolor{blue}{#1}}
+\newcommand{\note}[1]{\textcolor{gray}{\textit{(#1)}}}
+% Shorthands for the two loss classes, so the naming stays consistent.
+\newcommand{\occluded}{\textsc{Occluded}}
+\newcommand{\lost}{\textsc{Lost}}
+% -----------------------------------------------------------------------------
+
+\begin{document}
+
+% ALTERNATE TITLES, pick one:
+%  - "Knowing Why You Lost Them: Map-Conditioned Occlusion Reasoning for
+%     Marker-Free Human Following in Forests"
+%  - "Occlusion-Aware Human Following for MAVs in Cluttered Natural Environments"
+%  - "Classifying Target Loss for Robust Aerial Human Following"
+\title{Knowing \emph{Why} You Lost Them: Map-Conditioned Occlusion\\
+Reasoning for Marker-Free Human Following in Forests}
+
+\author{%
+\IEEEauthorblockN{Kevin Biju Mathew}
+\IEEEauthorblockA{Robotics / Interdisciplinary Engineering\\
+Purdue University\\
+West Lafayette, IN, USA\\
+\tbd{email}}
+\and
+\IEEEauthorblockN{Shrikrishna Bhagirath Rajule}
+\IEEEauthorblockA{Robotics / Interdisciplinary Engineering\\
+Purdue University\\
+West Lafayette, IN, USA\\
+\tbd{email}}
+\and
+\IEEEauthorblockN{Aniket Bera}
+\IEEEauthorblockA{Department of Computer Science\\
+Purdue University\\
+West Lafayette, IN, USA\\
+\tbd{email}}
+}
+
+\maketitle
+
+%==============================================================================
+\begin{abstract}
+\note{Write LAST, 150--200 words. Beats: (1) aerial following in forests, (2)
+everyone treats loss as one event, (3) we classify the cause against the map,
+(4) result.}
+Autonomous aerial human following fails in forests, and it fails in a specific
+way: the target disappears behind a trunk. Every existing occlusion-aware aerial
+tracker responds to target loss with a single policy --- extrapolate the last
+motion estimate and keep flying --- because loss is treated as one
+undifferentiated event. We argue that it is two events with opposite correct
+responses. A subject who has stepped behind a \SI{}{}\tbd{width}\,m trunk at
+\SI{1.4}{\meter\per\second} will re-emerge on a predictable side in under a
+second, and the right behaviour is to hold standoff and pre-position for that
+edge; a subject who has genuinely left the sensor's reach requires a search. We
+show that the geometry needed to tell these apart is already present in the
+occupancy map an obstacle-avoiding MAV builds for free, and we present a
+following system that queries it: a line-of-sight test against known geometry
+classifies each loss as \occluded{} or \lost{}, a reappearance belief is
+propagated over the occluder's silhouette, and the planner is conditioned on the
+resulting class. The system runs entirely onboard \tbd{platform one-liner},
+tracks an \emph{unmarked} human --- unlike prior LiDAR aerial tracking, which
+instruments its targets with retroreflective tape --- and we evaluate it in
+\tbd{N} real forest trials, reducing re-acquisition time by \tbd{X}\,\% against
+\tbd{baseline}.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Aerial systems: perception and autonomy; visual tracking; motion and path
+planning; field robotics; human detection and tracking.
+\end{IEEEkeywords}
+
+%==============================================================================
+\section{Introduction}
+\label{sec:intro}
+
+\note{~1 column + teaser. Beats in order:}
+
+\begin{enumerate}
+  \item \textbf{The task.} An MAV that keeps a designated person in view through
+        natural clutter --- search-and-rescue escort, forestry and field work
+        support, cinematography under canopy.
+  \item \textbf{The forest makes it hard in one particular way.} Trunks are
+        narrow, dense, and everywhere; occlusion is not an edge case but the
+        steady state. A commercial visual-tracking drone fails at the woodland
+        boundary~\cite{ren2025super}.
+  \item \textbf{What everyone does about it.} The occlusion-aware aerial
+        tracking literature is mature and
+        capable~\cite{ji2022elastic,wang2021visibility,svpto2023,gao2024adaptive},
+        and the most recent work adds explicit
+        re-acquisition~\cite{lin2026evatracker}. But target loss is handled as a
+        single event class: predict forward and continue.
+  \item \textbf{Why that is the wrong abstraction.} State the trunk example
+        numerically. Two losses, same sensor signature, opposite correct
+        responses. An unconditional extrapolation policy is right for one and
+        wasteful-or-dangerous for the other.
+  \item \textbf{The observation that makes it cheap.} The information required
+        to separate them --- is the predicted target position behind
+        \emph{known} occupied geometry, as seen from the current viewpoint? ---
+        is a ray query into the occupancy map the planner already
+        maintains~\cite{ren2023rogmap}. No new sensor, no new map, no learned
+        occlusion model.
+  \item \textbf{Contributions.}
+\end{enumerate}
+
+\noindent\textbf{Contributions.}
+\begin{itemize}
+  \item \textbf{Loss-cause classification.} A line-of-sight test against the
+        onboard-built occupancy map that labels every target-loss event
+        \occluded{} or \lost{}, using geometry already computed for obstacle
+        avoidance (Sec.~\ref{sec:classify}).
+  \item \textbf{A reappearance belief, not a point.} Under \occluded{}, we
+        propagate the predicted target state over the occluder's silhouette to
+        produce a distribution over \emph{where and when} the subject re-emerges,
+        and condition the viewpoint planner on it (Sec.~\ref{sec:reappear}).
+  \item \textbf{Marker-free LiDAR-and-RGBD human following.} Prior LiDAR aerial
+        tracking, including the system we build
+        on~\cite{ren2025super} and its swarm
+        extension~\cite{yin2023swarm}, instruments the target with
+        retroreflective tape. We track an unmarked human.
+  \item \textbf{Forest evaluation with an uninstrumented human subject}, against
+        three baselines including a re-acquisition-capable prior
+        system~\cite{lin2026evatracker}, plus an offline prediction study under
+        induced missing observations~\cite{chib2024trajimpute} that isolates the
+        predictor from the flight system (Sec.~\ref{sec:results}).
+  \item \textbf{A layered safety architecture} in which the follow behaviour
+        cannot outlive its own evidence, which is what makes an autonomous
+        follower safe to fly near the person it is following
+        (Sec.~\ref{sec:safety}).
+\end{itemize}
+
+\begin{figure}[t]
+  \centering
+  \framebox[0.95\columnwidth]{\rule{0pt}{4.5cm}\ \tbd{TEASER. Best version:
+  three panels of the same instant --- (a) onboard camera, subject vanishing
+  behind a trunk; (b) the occupancy map with the LoS ray blocked and the
+  reappearance region shaded on the trunk's left edge; (c) the flown trajectory
+  pre-positioning for that edge. The figure IS the paper's argument.}}
+  \caption{\tbd{caption}}
+  \label{fig:teaser}
+\end{figure}
+
+%==============================================================================
+\section{Related Work}
+\label{sec:related}
+
+\note{~1 column, 3 subsections, then the table. Structure fixed --- each
+subsection ends by naming the shared limitation.}
+
+\subsection{Perception- and Visibility-Aware Aerial Tracking}
+Aerial target tracking in clutter matured through target-informed kinodynamic
+search~\cite{han2021fasttracker}, differentiable visibility
+metrics folded into trajectory
+optimization~\cite{wang2021visibility,jeon2019online,bonatti2018cinematographer},
+and joint spatio-temporal optimization with analytic occlusion
+costs~\cite{ji2022elastic}, consolidated in~\cite{gao2024adaptive}. Related
+formulations adjust standoff distance and relative angle with environment
+complexity~\cite{svpto2023}, optimize position and yaw
+jointly~\cite{tordesillas2022panther}, or learn the occlusion
+cost~\cite{masnavi2022visibility}. The most recent work adds explicit
+re-acquisition: prediction-driven path generation continues from predicted target
+positions after loss~\cite{lin2026evatracker}.
+\emph{Shared limitation:} occlusion is treated either as a cost to \emph{avoid}
+or as an event to \emph{extrapolate through}. No system asks why the target
+disappeared. \note{This sentence is the paper's hinge --- make sure it is
+defensible against all six citations above.}
+
+\subsection{Human Trajectory Prediction Under Partial Observation}
+Pedestrian forecasting is a mature field~\cite{rudenko2020survey}, from social
+pooling~\cite{alahi2016sociallstm,gupta2018socialgan} through dynamics-constrained
+graph models~\cite{salzmann2020trajectron} to low-rank descriptor
+spaces~\cite{bae2023eigentrajectory} and diffusion
+predictors~\cite{bae2024singulartrajectory,mao2023led}. Nearly all of it assumes
+a \emph{complete} observation history; \cite{chib2024trajimpute} states the
+assumption explicitly and provides the first benchmark for missing observations,
+alongside joint imputation-and-prediction
+approaches~\cite{xu2023uncovering,becker2021missformer}. Closest to our reasoning
+is occlusion inference for partially observable driving
+scenes~\cite{shi2024sceneinformer}, which jointly infers occluded agents and
+predicts observed ones.
+\emph{Shared limitation:} these methods are not coupled to a planner, and the
+map-conditioned variants assume a prior HD map rather than an occupancy grid the
+robot builds online.
+
+\subsection{LiDAR MAV Navigation in Unstructured Environments}
+Corridor-based high-speed planning~\cite{ren2022bubble,tordesillas2021faster},
+ESDF-free local planning~\cite{zhou2020egoplanner}, perception-aware
+replanning~\cite{zhou2021raptor}, and the MINCO trajectory
+class~\cite{wang2022minco} underpin modern LiDAR MAV autonomy, with
+tightly-coupled LiDAR-inertial odometry~\cite{xu2022fastlio2} and
+planning-oriented occupancy maps~\cite{ren2023rogmap} as the substrate. Field
+deployments now reach real forests~\cite{schedl2021forest,boreal2025}, and
+learning-based flight has been demonstrated in the
+wild~\cite{loquercio2021highspeed}.
+\emph{Shared limitation:} the tracking modes of these systems use
+\emph{instrumented} targets --- retroreflective markers --- and constant-velocity
+motion models~\cite{ren2025super,yin2023swarm}.
+
+\begin{table*}[t]
+\centering
+\caption{Positioning against the closest prior systems. \note{Reviewers in this
+subfield expect this table. Fill every cell --- an empty cell reads as an
+unexamined claim.}}
+\label{tab:related}
+\footnotesize
+\begin{tabular}{@{}lllllll@{}}
+\toprule
+System & Occlusion handling & Target prediction & Loss-cause & Reappearance
+& Target & Environment \\
+       &                    &                   & classified? & belief? & marked? & \\
+\midrule
+Elastic Tracker~\cite{ji2022elastic}     & preventive cost      & intention-free & no & no & \tbd{} & obstacles \\
+Wang et al.~\cite{wang2021visibility}    & differentiable cost  & \tbd{}         & no & no & \tbd{} & obstacles \\
+SVPTO~\cite{svpto2023}                   & standoff modulation  & \tbd{}         & no & no & \tbd{} & obstacles \\
+BPOD~\cite{bpod2023}                     & belief-space $P$(detect) & stochastic & no & \emph{implicit} & \tbd{} & clutter \\
+Eva-Tracker~\cite{lin2026evatracker}     & FoV-ESDF             & analytic/geometric & \textbf{no} & no & \tbd{} & clutter \\
+SUPER~\cite{ren2025super}                & none (safety only)   & constant velocity & no & no & \textbf{yes} & forest \\
+\textbf{Ours}                            & map raycast + planner conditioning & CTRV\,$\oplus$\,learned & \textbf{yes} & \textbf{yes} & \textbf{no} & forest \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\subsection{Explicit Differentiation}
+\note{One paragraph, one sentence per Tier-0 system. A reviewer will check
+exactly this. Drafted below --- sharpen once you have read all four in full.}
+
+Against~\cite{lin2026evatracker}, which shares our hardware class and our
+re-acquisition claim: their loss handling is unconditional prediction
+carry-forward, so a target that walked out of range and a target standing behind
+a trunk receive identical treatment, and their FoV-ESDF is a planner-side
+visibility construct rather than a belief over re-emergence.
+Against~\cite{ji2022elastic}: their occlusion cost is \emph{preventive}, with no
+model of behaviour \emph{during} occlusion, and its stated intention-free design
+is precisely the prior we argue is wrong for a human target in structured
+clutter. Against~\cite{bpod2023}, the closest formalization of reasoning about
+future visibility: their probability of detection is propagated over continuous
+stochastic states, where ours is a discrete-event, map-conditioned classification
+that changes the planner's \emph{mode} rather than weighting a cost.
+Against~\cite{ren2025super}, our own base planner: its tracking mode uses a
+retroreflective marker and a constant-velocity model, which makes its occlusion
+story untested by construction --- the target is trivially detectable whenever it
+is visible at all. \note{Also address \cite{bera2016glmp} or your own prior work
+if relevant --- self-citation placement is your call.}
+
+%==============================================================================
+\section{Problem Formulation}
+\label{sec:problem}
+
+\note{New section --- the old draft had none, and this thesis needs one. Keep it
+short and make the classification precise enough to implement from the paper.}
+
+Let $\mathcal{M}_t$ be the onboard occupancy map at time $t$, assigning each
+voxel one of $\{\textsc{Free}, \textsc{Occupied}, \textsc{Unknown}\}$, and let
+$\mathbf{p}^{\text{mav}}_t$ be the vehicle position. A target track carries state
+$\mathbf{x}_t = [\,\mathbf{p}_t, \mathbf{v}_t\,]$ and a predictor
+$f(\cdot)$ producing $\hat{\mathbf{p}}_{t+\tau}$ for a horizon $\tau$.
+
+At the first frame $t^\ast$ in which the tracker reports no detection for the
+locked target, we evaluate the line segment
+$\overline{\mathbf{p}^{\text{mav}}_{t^\ast}\,\hat{\mathbf{p}}_{t^\ast}}$ against
+$\mathcal{M}_{t^\ast}$ and assign
+
+\begin{equation}
+c_{t^\ast} =
+\begin{cases}
+\occluded{} & \text{if the segment intersects \textsc{Occupied} voxels} \\
+             & \text{before reaching } \hat{\mathbf{p}}_{t^\ast},\\[2pt]
+\lost{}      & \text{otherwise.}
+\end{cases}
+\label{eq:classify}
+\end{equation}
+
+\tbd{This is the honest first version and it is too simple. Decide and write up:
+(i) the \textsc{Unknown} case --- a ray through unmapped space is neither
+occlusion nor loss, and in a forest it is common; propose a third class
+\textsc{Unmapped} or fold it into \lost{} and say why. (ii) A single ray to a
+point target is brittle; use the target's bounding volume and report the
+\emph{fraction} of rays blocked, thresholded. (iii) Detector false negatives
+produce loss events with a clear line of sight --- these correctly classify as
+\lost{}, which is a feature, but say so. (iv) State the time budget: this must
+run inside one \SI{8}{\hertz} (\SI{125}{\milli\second}) perception frame.}
+
+Under $c=\occluded{}$ we additionally require the \emph{reappearance set}
+$\mathcal{R} \subset \mathbb{R}^3$: positions on the boundary of the occluding
+geometry at which the predicted target trajectory re-enters free, visible space,
+with an associated time distribution (Sec.~\ref{sec:reappear}).
+
+%==============================================================================
+\section{System Overview}
+\label{sec:system}
+
+\subsection{Platform}
+\begin{table}[t]
+\centering
+\caption{Onboard hardware. All compute figures in this paper
+(Table~\ref{tab:compute}) were measured on this module.}
+\label{tab:hardware}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+Component & Part / configuration \\
+\midrule
+Airframe        & Gypsy MK5, \tbd{mass, prop size, endurance} \\
+LiDAR           & Livox MID-360, \SI{10}{\hertz} frames, \SI{200}{\hertz} IMU \\
+Camera          & Orbbec Gemini 336L, active stereo, $1280\times720$ @ \SI{30}{\hertz} \\
+Compute         & NVIDIA Jetson Orin NX (16\,GB), ROS~2 Humble \\
+Autopilot       & ARK FPV, PX4 v1.17, STM32H7 \\
+Companion link  & uXRCE-DDS over UART @ 3\,Mbaud \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Architecture}
+\begin{figure}[t]
+  \centering
+  \framebox[0.95\columnwidth]{\rule{0pt}{5.5cm}\ \tbd{ARCHITECTURE FIGURE. Must
+  show: the map serving BOTH the planner and the loss classifier (that shared
+  edge is the contribution); the two independent paths into the safety veto; and
+  the goal-status return edge from the planner.}}
+  \caption{\tbd{caption}}
+  \label{fig:arch}
+\end{figure}
+
+Six stages, each publishing only while it holds a belief it can defend:
+LiDAR-inertial state estimation; human detection and identity-persistent
+tracking; trajectory prediction; \textbf{loss classification and reappearance
+belief}; standoff viewpoint planning; and goal arbitration with an independent
+human-proximity veto. Stage four is the contribution; the rest is engineering we
+describe only to the extent that the contribution depends on it.
+
+%==============================================================================
+\section{Method}
+\label{sec:method}
+
+\subsection{State Estimation and Autopilot Integration}
+\label{sec:state}
+We use tightly-coupled iterated-EKF LiDAR-inertial odometry~\cite{xu2022fastlio2}
+as the sole absolute position source, fused by the autopilot's estimator as an
+external-vision measurement alongside optical-flow velocity and a downward
+rangefinder; satellite navigation is disabled so reported behaviour is
+attributable to the onboard estimate. Three interface details are load-bearing
+and are, in our experience, where this integration is usually silently wrong:
+the odometry is stamped at the instant the filter propagates state to, so the
+estimator's measurement-delay parameter must be \emph{zero} or the latency is
+double-counted; the odometry frame is the LiDAR's internal IMU, not the vehicle
+body, so the declared lever arm must be verified against the constant offset
+between estimator output and raw odometry \bench{(measured $(-0.014, +0.024,
++0.064)$\,m against a declared $(+0.011,-0.023,-0.070)$\,m)}; and mounting
+\emph{tilt} is recoverable by fusing vision yaw only and differencing
+gravity-referenced attitude from two independent IMUs \bench{(roll $-1.55^\circ$,
+pitch $+0.09^\circ$)}, while mounting \emph{yaw} is unobservable from the
+estimator that consumes it and must be established mechanically.
+\note{Compress to 4--5 sentences if page-limited; the detail belongs in
+Sec.~\ref{sec:lessons} anyway.}
+
+\subsection{Detection, Tracking, and 3-D Localization}
+\label{sec:perception}
+Per colour frame: a single-stage detector restricted to the person class, with
+identity association by a motion-and-appearance
+tracker~\cite{aharon2022botsort,zhang2022bytetrack}. Each confirmed track is
+localized in 3-D by deprojecting depth into an organized point array and reducing
+the samples inside the track's box. World$\leftarrow$camera is taken at the
+frame's \emph{own} timestamp, never the latest transform: with a
+\SI{10}{\hertz} pose source and a \SI{30}{\hertz} camera the difference is up to
+a full pose interval of position error on a moving vehicle, and it is invisible
+in static testing.
+
+\paragraph{Depth source} Two candidates are carried and selected at run time.
+\bench{Indoors, the camera's active stereo yields \SI{88.4}{\percent} valid
+pixels at \SI{30}{\hertz}; LiDAR points projected through the solved extrinsic
+cover \SI{13.5}{\percent} of the camera field of view, with no returns in the
+lower third owing to the sensor's ${\approx}-7^\circ$ vertical floor.} The camera
+is the default. The caveat is structural rather than incidental --- it is an
+\emph{active} stereo sensor whose projector competes with solar infrared, so the
+indoor advantage is exactly what outdoor operation attacks, and canopy
+illumination is neither indoor nor open-sky.
+\tbd{Outdoor + under-canopy depth characterization. This experiment is designed,
+not run, and a reviewer WILL ask. See also~\cite{canopy2026} on LiDAR return
+behaviour through vegetation.}
+
+\paragraph{Extrinsics} Targetless single-shot camera--LiDAR
+calibration~\cite{koide2023calibration} with learned
+correspondences~\cite{sarlin2020superglue}. \bench{8 capture pairs, validated at
+$\Delta u = 0$\,px, $\Delta v = +1$\,px.} The calibration is bound to specific
+sensor serial numbers and refuses to load against a mismatched pair.
+\tbd{Motor-on re-validation --- solved with motors off; vibration shifts it.}
+
+\subsection{Trajectory Prediction}
+\label{sec:prediction}
+We fuse a kinematic prior with a learned pedestrian model. The kinematic branch
+is a constant-turn-rate-and-velocity
+model~\cite{schubert2008comparison}; the learned branch is a low-rank trajectory
+descriptor predictor~\cite{bae2023eigentrajectory} operating on an
+$8$-step observation window with a $12$-step horizon, blended with weight
+$\alpha$.
+
+Two properties of this pairing matter for the contribution:
+
+\begin{itemize}
+  \item The learned predictor \textbf{assumes a complete observation
+        history}~\cite{chib2024trajimpute}. Occlusion is precisely the condition
+        that violates it, so the fusion weight must be a function of observation
+        completeness rather than a constant. \tbd{state the actual schedule ---
+        currently a fixed $\alpha$; make it depend on missed-frame count and say
+        so, or justify the constant.}
+  \item Under \occluded{}, the kinematic branch is the one that carries a
+        physically meaningful prior through the gap, while the learned branch
+        contributes multimodality about \emph{which way} the subject went around
+        the occluder. \tbd{verify this is what actually happens; it is the
+        claim the ablation in Sec.~\ref{sec:results} tests.}
+\end{itemize}
+
+\note{Honest status for the writing team: the learned branch ships DISABLED by
+default and its checkpoint/config live outside version control. Either enable and
+characterize it, or describe the system as CTRV with the learned branch as an
+evaluated option --- but the paper must not imply it flew if it did not.}
+
+\subsection{Loss-Cause Classification}
+\label{sec:classify}
+\note{THE CONTRIBUTION. This subsection deserves the most space, an algorithm
+block, and a figure. Everything above is setup.}
+
+On the first frame with no detection for the locked target, we evaluate
+Eq.~\eqref{eq:classify} by casting into the planner's occupancy
+map~\cite{ren2023rogmap}.
+
+\begin{algorithm}[t]
+\caption{\tbd{Loss classification and reappearance belief}}
+\label{alg:classify}
+\begin{algorithmic}[1]
+\STATE \tbd{Write this properly once the implementation settles. Shape:}
+\STATE \textbf{input:} map $\mathcal{M}$, MAV pose, last confirmed track, predictor $f$
+\STATE $\hat{\mathbf{p}} \leftarrow f(\text{history}, \tau)$
+\STATE cast $N$ rays from MAV to the predicted target volume
+\STATE $\rho \leftarrow$ fraction blocked by \textsc{Occupied} before $\hat{\mathbf{p}}$
+\STATE \textbf{if} $\rho > \rho_{\text{thresh}}$ \textbf{then} $c \leftarrow \occluded{}$
+       \textbf{else} $c \leftarrow \lost{}$
+\STATE \textbf{if} $c = \occluded{}$ \textbf{then} compute $\mathcal{R}$, the
+       silhouette-boundary crossing set, with arrival-time distribution
+\STATE \textbf{return} $c$, $\mathcal{R}$
+\end{algorithmic}
+\end{algorithm}
+
+\paragraph{Why this is nearly free} The map is maintained for obstacle avoidance
+regardless; the classification adds $N$ ray queries per lost frame.
+\tbd{measure and report: $\mu$s per classification, and the worst case within a
+\SI{8}{\hertz} budget. A cheap contribution is a feature --- quantify it.}
+
+\paragraph{The dependency, and its one-line configuration trap}
+The classifier inherits whatever the map can represent. If the map frees cells
+only by raycasting and raycasting is off, the map never forgets: a walking person
+is inserted as permanent occupancy, the subject stamps a wall behind themselves
+along the corridor the vehicle must fly, and Eq.~\eqref{eq:classify} then queries
+that stale occupancy and reports \occluded{} against the target's own history.
+\tbd{Raycasting is now ENABLED in the flown follow configuration and its patch
+(2026-09-12); it was previously disabled, inherited by copy from the bench
+configuration. Still to measure before flying: its CPU cost, reported alongside
+the classifier's own; clearing time on hardware; and trail false-\occluded{}. A
+saturated cell needs 31 clean rays to leave \textsc{Occupied} and 74 to become
+\textsc{Free} at $p_{\max}=0.95$, reading \textsc{Unknown} in between, and a subject
+walking directly away leaves that trail on the line of sight. If the locked
+target's points are filtered from the map input (plan M5.3), state it here.}
+\note{Worth a sentence in the paper regardless of our own bug: the dependency is
+real and general --- any map that cannot clear a moving occupant will corrupt this
+classification, so it is a stated precondition of the method, not an
+implementation detail.}
+\note{Second precondition, found 2026-09-14 on a bench replay (docs/m6-loss-oracle.md): the
+LiDAR's vertical field of view bounds what the map can know. The MID360 looks no lower than
+$7^\circ$ below its horizon, so at range $d$ nothing below $z_{\text{sensor}} - d\tan 7^\circ$
+is ever observed --- \SI{0.5}{\meter} under the sensor at \SI{4}{\meter}. The classifier
+samples the target volume only at heights the map can know, and an occluder is classifiable
+only where it rises above that plane at its range: trunks do, a chest-high obstacle from a
+vehicle at head height does not. State it with Eq.~\eqref{eq:classify}.}
+
+\subsection{Reappearance Belief and Planner Conditioning}
+\label{sec:reappear}
+Under \occluded{}, we propagate the predicted state across the occluder and
+retain the set $\mathcal{R}$ of boundary crossings with arrival times, giving a
+distribution over where and when the subject re-emerges. The viewpoint planner is
+then conditioned on the loss class:
+
+\begin{itemize}
+  \item \occluded{}: hold a tight standoff, and bias the viewpoint toward the
+        highest-probability element of $\mathcal{R}$ --- pre-position for the
+        edge rather than chase the extrapolated point.
+  \item \lost{}: abandon the standoff geometry and execute a search
+        \tbd{define it: ascend-and-widen is the obvious choice and matches the
+        loss response the safety layer already implements.}
+\end{itemize}
+
+\note{As built 2026-09-14 (docs/m6-loss-oracle.md, ``M6.4b''); every number below is a bench
+figure from the real planner process on synthetic scans. Steps 3 and 4 are each behind their
+own switch, off in code and on in the flight configuration, so the belief can be reported with
+and without each --- that is the ablation. Nothing here has flown.}
+
+\paragraph{Constructing $\mathcal{R}$} From the blocked ray nearest the target's
+centre we sweep the bearing left and right in one-cell angular steps at the
+target's range until \bench{three} consecutive columns are free, which gives the
+occluder's two edges and its angular interval. We then roll $K=\bench{32}$
+constant-turn-rate samples forward from the coasted state for \bench{\SI{3.2}{\second}}
+at \bench{\SI{0.1}{\second}}, each with its own speed, turn rate and heading drawn about
+the predictor's. A sample \emph{re-emerges} at its first point that lies outside the
+occluder's interval and has a camera ray containing no \textsc{Occupied} cell
+(\textsc{Unknown} is allowed: the space behind a trunk is unknown by nature).
+Re-emergence points are clustered by side of the occluder; each cluster carries a
+mean, a spread, an arrival-time distribution (min, median, max) and a mass, and
+the mass that never re-emerges within the horizon is the \emph{still-hidden}
+mass $w_h$. $\mathcal{R}$ is this set of clusters. The draws are seeded per event, so
+a replay reproduces the belief.
+
+\paragraph{Rollouts that go round} The samples walk on the same map. A step is
+split into sub-steps no longer than a cell, and a position is blocked when the
+walker's body --- sampled every half cell along its lateral diameter
+($\pm\bench{\SI{0.25}{\meter}}$) and the radius ahead, at every height the map can
+know --- touches an \textsc{Occupied} cell of the raw grid (inflation is sized for
+the vehicle, not a person). A blocked sub-step tries headings
+$\pm\bench{15^\circ}, \pm\bench{30^\circ}, \ldots, \pm\bench{90^\circ}$, the sample's own turn
+side first, and takes the first free one \emph{for that sub-step only}; the
+intended heading is tried again on the next, so the sample slides round the
+obstacle and resumes its course. A coasted state that already lies inside an
+obstacle is backed off along its reverse heading, and a cluster whose mean lands
+in occupied cells reports its medoid. No new random draws are made, so with this
+step disabled the belief is bit-for-bit the one above \bench{(36/36 events
+identical, checked against the previous build)}. Without it, the exit test's
+\bench{\SI{0.4}{\meter}} stop-short --- there so the subject's own still-occupied cells
+never count as an occluder --- records a re-emergence \emph{on} the mapped face of a
+trunk the sample's path crosses \bench{(\SI{0.03}{\meter} from an occupied cell)}; with
+it, every re-emergence point keeps $\geq\bench{\SI{0.19}{\meter}}$ from every mapped cell
+and the dominant side is unchanged.
+
+\paragraph{What the map can vouch for} The map holds an obstacle as the shell of
+the face the sensor has seen: a \SI{0.6}{\meter} trunk \SI{4}{\meter} away was
+\bench{six} cells per height, its back half, interior and tangent zones
+\textsc{Unknown}. The samples therefore keep out of the \emph{mapped} body of an
+obstacle and out of nothing the map has never seen; a sample that gets round the
+lit face's edge walks through the unseen back unopposed. A trunk mapped from two
+sides is a closed shell, from one side a wall. This is a precondition of the
+belief, general to any surface map, and belongs beside the raycasting
+precondition of Sec.~\ref{sec:classify}.
+
+\paragraph{Reduction to a goal and a yaw} The planner consumes a goal position
+and a yaw target. The yaw target is the dominant cluster's mean. The goal is the
+candidate on the standoff annulus of Sec.~\ref{sec:viewpoint} about that point
+(\bench{24} azimuths $\times$ \bench{3} radii) that lies outside inflated occupancy, at least
+$d_{\text{hard}}$ from the subject's coasted position, has a camera ray to the point
+with no \textsc{Occupied} cell, and is nearest the vehicle. The tracker uses the
+cluster's arrival-time window and its region as the re-acquisition gate
+(Sec.~\ref{sec:goalcontract}).
+
+\paragraph{Looking behind} When most samples stay hidden --- $w_h\geq\bench{0.5}$, or
+no sample re-emerges at all --- pre-positioning for an edge is pointless. The yaw
+target then becomes the hidden samples' mean position at $t=\bench{\SI{1.5}{\second}}$,
+and the same annulus search runs about that point: its clear-ray requirement
+forces the goal off the camera--occluder line, which is exactly the sidestep a
+pilot makes to see behind a tree. $\mathcal{R}$ is left as it is. On the bench the
+trigger is well separated: behind an r\,\bench{0.3}\,m trunk at \bench{\SI{1}{\meter\per\second}}
+only \bench{0.31--0.59} of the samples stay hidden and the cluster goal already looks
+behind the trunk; behind an r\,\bench{0.5}\,m trunk at \bench{\SI{0.7}{\meter\per\second}}
+\bench{0.62--0.84} stay hidden and the look point fires on every event, the goal
+\bench{\SI{1.0}{\meter}} off the camera--trunk line. \tbd{The trigger has no hysteresis; if
+flight logs show the yaw target alternating when $w_h$ straddles the threshold,
+add one and say so.}
+
+\paragraph{Cost} With both steps enabled the full evaluation --- rays, extent,
+rollouts, reduction --- takes \bench{\SI{2.5}{\milli\second}} at the 99th percentile on the
+flight computer (\bench{\SI{0.4}{\milli\second}} without the obstacle-aware rollouts),
+against an \SI{8}{\hertz} coast rate.
+
+\subsection{Standoff Viewpoint Planning}
+\label{sec:viewpoint}
+The nominal (target-visible) behaviour places a goal on the annulus
+$[d_{\min}, d_{\max}] = [\bench{3.0}, \bench{4.0}]$\,m about the subject with a
+hard minimum standoff of \bench{\SI{2.5}{\meter}}, plus a separate yaw target so
+the vehicle faces the subject rather than its velocity vector. Two choices matter
+more than the geometry. First, the goal leads along the predicted path: a
+point-to-point planner replans rest-to-rest as distance-to-goal approaches zero,
+so a goal at the subject's current position induces continuous replanning exactly
+when the vehicle is closest to the person. Second, yaw is a separate channel, and
+if it is silently misrouted the vehicle flies a geometrically perfect standoff
+while never pointing its camera at the subject, with no error reported anywhere.
+
+\subsection{The Goal-Acknowledgment Contract}
+\label{sec:goalcontract}
+Safety-assured planners do not accept arbitrary goals. Ours~\cite{ren2025super}
+may accept a requested goal, relocate it to the nearest free cell within a fixed
+radius, or reject it and retain the previous one --- reporting none of these. For
+a static waypoint this is benign; for a continuously moving standoff goal the
+follower would believe the vehicle is heading somewhere it is not. We extend the
+planner to preserve commanded altitude, emit an explicit
+\textsc{Accepted}/\textsc{Snapped}/\textsc{Dropped} acknowledgment per request,
+and \emph{echo the requested point} in it --- necessary because under
+\textsc{Dropped} the reported active goal is the previous one, geometrically
+unrelated to the request, so without the echo a subscriber cannot tell which
+request an acknowledgment answers.
+
+\subsection{Safety Layer}
+\label{sec:safety}
+Goal sources are arbitrated
+$\textsc{Safety} \succ \textsc{Manual} \succ \textsc{Follow} \succ \textsc{Nav}$,
+manual authority being enforced by the autopilot. Three properties define the
+layer. \emph{One publishing path:} exactly one function may emit a goal, from a
+single periodic timer, because a second path is a path that can bypass the veto.
+\emph{The veto is independent of the follow product:} the human-proximity veto
+(radius \bench{\SI{1.5}{\meter}}) subscribes to the raw detection stream --- every
+person, every frame, including empty frames --- so a defect in viewpoint geometry
+cannot defeat it. \emph{Silence is not a stop at the goal layer:} a stored goal
+keeps the vehicle flying, so every stop condition \emph{publishes} a hold near
+the current position rather than going quiet. Composed, these give the loss
+response for free: each stage stops publishing when it loses its belief, and the
+arbitration layer converts that silence into a commanded hold.
+
+\note{Under the new thesis this is a secondary contribution. Keep it --- it is
+what makes flying near the followed human defensible --- but it must not crowd
+Sec.~\ref{sec:classify}. Cut to half a column if page-limited.}
+
+%==============================================================================
+\section{Implementation}
+\label{sec:impl}
+
+\paragraph{Process boundaries are a bandwidth decision} The organized point array
+needed for per-detection ranging is $1280\times720\times3$ floats,
+\bench{\SI{11.06}{\mega\byte}} per frame, \bench{\SI{88}{\mega\byte\per\second}}
+at the \SI{8}{\hertz} detection rate. Our middleware could not carry it: \bench{a
+\SI{2.76}{\mega\byte} message at \SI{30}{\hertz} already lost
+${\approx}\SI{8}{\percent}$ of frames} in a Python subscriber, and best-effort
+transport fragments an \SI{11}{\mega\byte} sample across thousands of datagrams
+where one loss discards the sample. The array is built inside the perception
+process and never serialized, with an off-by-default debug publisher for
+visualization and replay sharing one deprojection implementation, so what is
+recorded deprojects exactly as what is flown.
+\note{Since 2026-09-13 the flown cloud is built on the GPU (cloud\_backend:
+cuda) while the debug publisher stays numpy, so ``one implementation'' is now
+``two implementations verified bit-identical'' (200/200 real frames; re-checked
+by the node on its first frames every run). Reword, and add the CPU effect
+(bag replay: $\sim$1.9 $\to$ 0.7 cores) once measured in flight.}
+
+\paragraph{Failure detection} A watchdog monitors publication rates for every
+sensor-derived stream, because a sensor can stop producing while its process, USB
+enumeration and topic registrations all remain healthy \bench{(observed on the
+depth camera)}.
+
+\begin{table}[t]
+\centering
+\caption{Onboard compute. \bench{Blue} = bench measurement; in-flight pending.}
+\label{tab:compute}
+\footnotesize
+\begin{tabular}{@{}lrr@{}}
+\toprule
+Process & CPU (\% of one core) & RSS (MB) \\
+\midrule
+LiDAR-inertial odometry   & \bench{39.6} & \bench{157} \\
+Human perception          & \bench{60.1} & \bench{503} \\
+Target manager            & \bench{4.0}  & \bench{59}  \\
+Viewpoint planner         & \bench{0.7}  & \bench{25}  \\
+Arbitration + veto        & \bench{10.4} & \bench{59}  \\
+Loss classifier           & \tbd{}       & \tbd{}      \\
+Trajectory planner        & \tbd{}       & \tbd{}      \\
+Setpoint bridge           & \bench{34}   & \bench{69}  \\
+\midrule
+Total                     & \tbd{}       & \tbd{}      \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%==============================================================================
+\section{Experiments}
+\label{sec:results}
+
+\note{Evaluation design follows the bibliography's Bucket 7. Do the offline
+study FIRST --- it needs no flight time and de-risks the paper.}
+
+\subsection{Offline: Prediction Under Missing Observations}
+Before any flight, we evaluate the predictor in isolation on standard pedestrian
+data with induced missing observations, following the protocol
+of~\cite{chib2024trajimpute}. Metrics are ADE/FDE, reported both with complete
+histories and under increasing missing-observation rates.
+
+\begin{table}[t]
+\centering
+\caption{Prediction error under induced missing observations
+(\cite{chib2024trajimpute} protocol). \tbd{all cells}}
+\label{tab:prediction}
+\footnotesize
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+& \multicolumn{2}{c}{Complete history} & \multicolumn{2}{c}{\tbd{X}\% missing} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+Predictor & ADE & FDE & ADE & FDE \\
+\midrule
+CTRV only                 & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
+Learned only~\cite{bae2023eigentrajectory} & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
+Fused (ours)              & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Flight: Forest Trials}
+\tbd{Venue, canopy density, trunk diameter distribution, subject walking speeds,
+safety-pilot arrangement, geofence, abort criteria. Report trunk statistics ---
+the occlusion argument is a claim about geometry and the reviewer needs the
+geometry.}
+
+\paragraph{Baselines} (1)~stock~\cite{ren2025super}: constant-velocity model with
+a goal behind the target; (2)~our system with unconditional carry-forward and a
+fixed missed-frame drop, i.e.\ ablating the classifier; (3)~a
+re-acquisition-capable prior system~\cite{lin2026evatracker}; (4)~ours.
+\note{Baseline 3 is the one reviewers will demand, and its code is public --- run
+the real thing rather than a reimplementation if at all possible.}
+
+\paragraph{Metrics}
+\begin{itemize}
+  \item Re-acquisition time after occlusion onset \note{the headline number}
+  \item Tracking-loss duration, mean and max, per trial
+  \item Visibility rate: fraction of mission time with the subject in view
+  \item Tracking success rate over $N$ runs
+  \item \textbf{Loss-classification accuracy}: \occluded{} vs.\ \lost{} against
+        ground truth \tbd{ground-truth mechanism --- an RTK tag on the subject
+        used for evaluation only, never for detection. Say this explicitly or a
+        reviewer will assume you cheated.}
+  \item Bearing error: angle between camera axis and subject
+  \item Safety-pilot interventions per autonomous minute, with cause
+\end{itemize}
+
+\begin{table}[t]
+\centering
+\caption{Forest following performance over \tbd{N} trials per condition.}
+\label{tab:following}
+\footnotesize
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Method & Re-acq.\ (s) & Vis.\ rate (\%) & Success (\%) & Interv./min \\
+\midrule
+SUPER stock~\cite{ren2025super}    & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
+Carry-forward (ablation)           & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
+Eva-Tracker~\cite{lin2026evatracker} & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
+\textbf{Ours}                      & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Ablations}
+\begin{enumerate}
+  \item \textbf{With / without loss classification} --- \note{THE ablation. If
+        this does not separate cleanly on re-acquisition time, the paper is an
+        RA-L systems paper, not an ICRA algorithms paper. Run it first.}
+  \item Learned vs.\ CTRV vs.\ fused prediction \emph{during} occlusion.
+  \item Reappearance as a point vs.\ as a region.
+  \item \tbd{ray count / threshold sensitivity for Eq.~\eqref{eq:classify}}
+\end{enumerate}
+
+\subsection{Safety-Layer Behaviour Under Induced Failure}
+\tbd{Occlude the subject; kill perception mid-follow; introduce a second person
+inside the re-acquisition band; starve the state estimate. Show the commanded
+response is the designed one in each case. This subsection is cheap to run and
+distinguishes the paper from tracking-accuracy-only submissions.}
+
+%==============================================================================
+\section{Lessons and Negative Results}
+\label{sec:lessons}
+
+\note{ICRA rewards this when specific and generalizable. Format each: symptom,
+why it was invisible, what it implies. CUT THIS SECTION FIRST if at 6 pages.}
+
+\paragraph{Latency no consumer detects} Our odometry produced correct values with
+correct timestamps that were \bench{${\approx}\SI{1.4}{\second}$ old}. Every
+downstream freshness check used message \emph{arrival} time, so nothing reported
+a fault, and a stationary vehicle is indistinguishable either way. Cause: a
+single-threaded executor whose always-overdue high-rate timer starved the sensor
+callback, plus an input queue that filled at startup and never drained.
+\bench{Corrected to \SIrange{49}{57}{\milli\second}.} \emph{Implication:} validate
+freshness against the stamp, on a moving platform; and note that fixing latency
+by shrinking a queue converts a queuing failure into a dropping failure that a
+bench cannot exercise.
+
+\paragraph{Occupancy maps cannot forget a person} Cells are freed only by
+raycasting, disabled by default in the high-rate configuration, so a passing
+person is inserted as permanent occupancy --- and a \emph{followed} person stamps
+a wall behind themselves along the corridor the vehicle must fly.
+\emph{Implication:} dynamic-obstacle handling is a precondition for aerial
+following, not an enhancement, and it is a precondition for our own
+classifier (Sec.~\ref{sec:classify}).
+
+\paragraph{Frame conventions fail silently} Every frame error we made produced a
+plausible, self-consistent, wrong system: a body origin that was the sensor's
+internal IMU; an estimator delay double-counting a latency already in the
+timestamp; a yaw convention differing from the obvious guess by $90^\circ$; a
+mounting yaw unobservable from the estimator consuming it. None raised an error.
+\emph{Implication:} assert against the \emph{plausible} wrong answer, not merely
+against a wrong one.
+
+\paragraph{Middleware determines architecture} Process boundaries were dictated
+by transport bandwidth, not design preference. \emph{Implication:} measure the
+transport before drawing the node diagram.
+
+\paragraph{The companion link is flight-critical and unprofiled}
+\bench{We recorded 22 autopilot hard faults across two firmware builds at a single
+program counter in the companion-link client, traced to a use-after-free in the
+serial driver's close/reopen path} --- i.e.\ triggered by the link loss most
+likely to occur when something else has already gone wrong.
+\note{2026-09-13: reproduced on demand on the bench; disabling RX DMA did not fix it; a
+client-side change that keeps the UART open across session losses passed 30/30 induced
+session losses but has not yet run the planned soak. If this paragraph stays, report the fix
+only once the soak passes.}
+\tbd{decide: paper, footnote, or cut. It is honest and unusual to report, and it
+may read as off-topic for a tracking paper.}
+
+%==============================================================================
+\section{Limitations}
+\label{sec:limitations}
+\begin{itemize}
+  \item \textbf{Single subject.} Group following and handoff are out of scope.
+  \item \textbf{Re-identification is geometric.} Abstention under ambiguity is
+        the correct conservative behaviour but ends follows an appearance model
+        could continue. \tbd{quantify how often}
+  \item \textbf{Classification depends on map quality} --- specifically on the
+        map's ability to clear stale occupancy (Sec.~\ref{sec:classify}).
+  \item \textbf{Active-stereo depth under canopy and sun} is uncharacterized.
+  \item \textbf{Calibration is bench-solved}, not re-validated under
+        motor-induced vibration.
+  \item \textbf{No consent mechanism.} The system distinguishes the locked
+        subject from bystanders and keeps distance from both, but ``the person
+        the operator engaged on'' is not ``a person who agreed to be followed by
+        an aircraft.'' We regard this as a real limitation of aerial following
+        generally, and note that our proximity veto is the only mechanism in the
+        system that protects a non-consenting bystander.
+\end{itemize}
+
+%==============================================================================
+\section{Conclusion}
+\label{sec:conclusion}
+\tbd{Write last. Land: the geometry needed to know \emph{why} you lost someone is
+already in the map you built to avoid hitting things, and using it turns one
+undifferentiated failure into two with distinct, cheap, correct responses. Point
+at released code.}
+
+\section*{Acknowledgment}
+\tbd{funding, lab, safety pilots, hardware loans}
+
+%==============================================================================
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}

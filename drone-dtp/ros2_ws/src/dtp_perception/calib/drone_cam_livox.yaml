@@ -1,0 +1,38 @@
+# camera<->LiDAR calibration -- GENERATED, do not hand-edit.
+# Regenerate with dtp_perception.calibration (see
+# plan/dtp-imp/19-camera-lidar-calibration-runbook.md).
+#
+# generated   : 2026-09-30 16:44:54 EDT
+# capture run : /home/ideas-ad/calib_runs/20260930_table (4 pairs)
+# solved from : /home/ideas-ad/calib_runs/20260930_table/T_camera_lidar.txt
+# note        : S500 v2 airframe, Gemini 336L + Livox Mid-360. MOTORS OFF (bench, drone on a long conference table). Capture 2026-09-30 ~16:20, 4 static viewpoints x 21 s. Solved on the NX by robust point-to-plane ICP of the Gemini depth cloud (factory depth->colour TF) against the accumulated MID360 cloud, 4 viewpoints jointly (solver in <capture run>/solver/; koide3 workstation unreachable). Replaces the 2026-09-13 deploy (09-11 solve), which was 3.64 deg off (optical axis 2.53 deg below the LiDAR x-y plane; now +1.09 deg) and put the camera 2.3 cm ABOVE the LiDAR (now 11.5 cm below, 13.8 cm ahead). Checks: tabletop plane per sensor, camera height via T within 0.6 cm (old: 14 cm off); LiDAR-intensity NCC peak (+3,+2) px / (+2,+1) px (old: (+7,+21) / (+7,+17)); score_alignment FAILS on this capture for both files (mesh chairs + parallax, see dtp-calibration.md).
+# cam serial  : explicit --camera_serial
+# lidar ip    : explicit --lidar_ip
+#
+# This calibration belongs to ONE physical camera body. calib_io enforces it.
+camera_serial: CPC64630007M
+#
+# ...and to ONE LiDAR. calib_io refuses a driver configured for another.
+lidar_ip: 192.168.1.154
+#
+# !! THIS EXTRINSIC IS SPECIFIC TO ONE PHYSICAL MOUNT. Any change to how the
+# !! camera or LiDAR is mounted INVALIDATES it. Re-run the calibration.
+# !! Not yet re-validated MOTOR-ON unless the note above says so (vibration
+# !! shifts the extrinsic -- plan/dtp-imp/05 Step 0.3.1b).
+
+# 4x4 homogeneous transform, Livox Mid-360 frame -> camera optical frame.
+T_camera_lidar:
+  - [-0.021803714, -0.999737566, 0.007028221, 0.017019356]
+  - [0.018926873, -0.007441396, -0.999793178, -0.117210230]
+  - [0.999583099, -0.021666182, 0.019084156, -0.135248968]
+  - [0.000000000, 0.000000000, 0.000000000, 1.000000000]
+
+# Factory intrinsics read live from /camera/color/camera_info at [1280, 720].
+intrinsics:
+  fx: 611.159790
+  fy: 611.342468
+  cx: 637.017029
+  cy: 363.181091
+
+distortion_model: plumb_bob
+d: [-0.03124923, 0.03501169, 0.00003306, 0.00003695, -0.01181292, 0.00000000, 0.00000000, 0.00000000]

@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>follow_planner</name>
+  <version>0.0.1</version>
+  <description>
+    Turns the locked human target (dtp_msgs/Target) into a moving standoff-viewpoint goal for
+    SUPER, published on /dtp/follow_goal (arbitrated against NAV by command_mux before
+    reaching SUPER's follow-goal ingestion). Also publishes the person's position on
+    /planning/yaw_target, which is what drives SUPER's YAW_TO_TARGET heading -- note that
+    topic name: fsm_node subscribes cfg_.yaw_target_topic, NOT the /dtp/target_point that
+    plan/dtp-imp/01 SS2 lists, and the mismatch fails silently. Modeled on
+    mission_planner/include/waypoint_mission/ros2_waypoint_planner.hpp. See
+    plan/dtp-imp/07 (Phase 2) for the full design.
+  </description>
+  <maintainer email="srajule@purdue.edu">krishna</maintainer>
+  <license>Proprietary</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>dtp_msgs</depend>
+  <depend>eigen</depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
